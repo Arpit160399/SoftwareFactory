@@ -1,0 +1,12 @@
+{
+  "revision": "replace-with-immutable-proposal-revision",
+  "title": "One observable user outcome",
+  "scope": "Describe the approved behavior, permitted changes and non-goals.",
+  "criteria": [
+    {"id": "C1", "description": "The intended result is visible and persists after reopening.", "required": true, "check_ids": ["journey-primary"]}
+  ],
+  "journeys": [
+    {"id": "J1", "description": "Starting data, user actions, visible and persisted result, cancellation and recovery.", "criterion_ids": ["C1"], "check_ids": ["journey-primary"], "required": true}
+  ],
+  "required_checks": ["journey-primary"]
+}

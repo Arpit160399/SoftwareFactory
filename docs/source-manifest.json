@@ -1,0 +1,25 @@
+{
+  "package": "softwarefactory",
+  "version": "0.1.0",
+  "date": "2026-09-08",
+  "sha256": {
+    "Cargo.toml": "7aee2347b0e7bf2307043e71d67cc3c1df6b9e73a4ab56f387e4daf4eb42ccbe",
+    "Cargo.lock": "3d22ea2610b8fbb2bce6d4f7e635596c578ac12ed2fba5ec631a7bac62e4064e",
+    "src/adapters.rs": "619ee8ee24777eade387ad9457d881be30fe939975d2766200867e1ccd9c4297",
+    "src/engine.rs": "7bad80ecc7c266c3b7989689bf27c9fc5c31a40cdf74ff9bff877073509f89f7",
+    "src/learning.rs": "1eea26a16173cf22ce0edf94921c0308c914b64e5546d6ff2fe3cd6d83b4c24d",
+    "src/lib.rs": "c67436a79651053f0d722efca7ecc9e2b99af74ac71b99c2ad19e1ba35ead8b4",
+    "src/main.rs": "f077fe6cd06e5a816b3aa1c41721c520016a754ad093d2d434517ce6d77ef7db",
+    "src/setup.rs": "bdfab28f0bb80066f4b30c5edaffdead4f0bb9c52f66f5b7a10d4d2d5eee4c94",
+    "src/tui.rs": "62f24105b21e761fc0e5401ddac39c3a9db54bed9e5fc6e2efbafec462c5e60a",
+    "prompts/harness-reviewer.md": "ae551ae1f8bdb953a8b96cbea8f7d2a942cd90f246de8d6b5b3bfd420c1c8a70",
+    "prompts/implementer.md": "53d40040c188dc559b204f471da67d51bbb3607fc22c74709dda1e992c0e4577",
+    "prompts/opportunities.md": "ef0cad34a7464d647a69fd6ee3058fc3ede4668112f3c1d7f5664df9101f5344",
+    "prompts/planner.md": "716a5591bdb30347b641bbb0bf86e964783a20c4a28b90e00fc185281b44a7d9",
+    "prompts/product-manager.md": "a7208bc9885b211593496d0aaab9fe00647daf932dea1a0650324a3acc2229ae",
+    "prompts/research.md": "ec2f9046c792866b32f341dd2fe716ca39444d71cf9f4e0d06e0b40a710d0a73",
+    "prompts/reviewer.md": "4c669763baf89b98f2f1448d0dcdd1683d015bd1b697903bbeeacdb66a4df741",
+    "bridges/native_check.py": "e17a56ff4d82b20ef6bdb845c076589a293b127bee6e61e95e4d6cce1c2ad565",
+    "bridges/notion_review.py": "2687e8822b32e5410ea2dbaf40eb04185e09a1dee48b0a66b195d33495b1e33b"
+  }
+}
