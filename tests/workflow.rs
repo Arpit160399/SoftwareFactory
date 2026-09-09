@@ -340,7 +340,7 @@ fn installed_release_and_alternate_project_check_complete_without_core_changes()
     assert!(
         install
             .path()
-            .join("releases/0.1.0/bridges/native_check.py")
+            .join(format!("releases/{VERSION}/bridges/native_check.py"))
             .exists()
     );
     let version = std::process::Command::new(install.path().join("bin/softwarefactory"))
@@ -356,7 +356,7 @@ fn installed_release_and_alternate_project_check_complete_without_core_changes()
         args: vec![
             install
                 .path()
-                .join("releases/0.1.0/bridges/native_check.py")
+                .join(format!("releases/{VERSION}/bridges/native_check.py"))
                 .display()
                 .to_string(),
             "--".into(),

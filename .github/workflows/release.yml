@@ -1,0 +1,80 @@
+name: Build release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Verify and build
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          cargo test --locked --target "$BUILD_TARGET"
+          cargo build --release --locked --target "$BUILD_TARGET"
+      - name: Package the native binary
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/package-release.py --binary "target/$BUILD_TARGET/release/softwarefactory" --target "$BUILD_TARGET" --tag "$RELEASE_TAG" --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/softwarefactory-*
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Prepare a complete draft release
+        run: |
+          cp bridges/notion_review.py bridges/native_check.py dist/
+          if gh release view "$RELEASE_TAG" --json isDraft > draft.json; then
+            jq -e '.isDraft == true' draft.json
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Software Factory $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          release_id=$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)
+          gh api "repos/$GH_REPO/releases/$release_id/assets" > assets.json
+          jq -e 'length == 5 and all(.[]; .state == "uploaded" and .size > 0 and (.digest | startswith("sha256:")))' assets.json
+          echo 'Release assets verified. Review the draft and publish it to make it available to terminal updates.' >> "$GITHUB_STEP_SUMMARY"

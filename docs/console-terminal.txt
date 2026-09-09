@@ -1,0 +1,32 @@
+ SOFTWARE FACTORY   terminal-test                                                                             
+ Runner active                                                                                                
+                                                                                                              
+ Home │ Workflow │ Tasks │ Review │ History │ Settings                                                        
+                                                                                                              
+┌ Review inbox · Enter details ──────────────────────────────────────────────────────────────────────────────┐
+│› Needs approval · Synthetic visible and saved result                                                       │
+│  Review the proposal and record a build decision in the configured review source                           │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Tab Screens · N New · R Run · B Resume · Space Pause · X Stop · E Setup                                       
+P Check prerequisites · S Sync board · Q Close                                                                
+Workflow started; human decisions remain required                                                             
+                                                                                                              

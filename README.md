@@ -13,6 +13,8 @@ cargo build --release --locked
 ./target/release/softwarefactory --project /absolute/path/to/project tui
 ```
 
+The default TUI now opens a six-screen control panel with live workflow controls, a local task board, review evidence, prerequisites and Notion sync health. See [the TUI guide](docs/TUI.md). Press E for setup, or use `tui --setup`.
+
 The wizard accepts the exact project directory, generic or Meal Map template, product context, runtime executable, high-reasoning planner model, review bridge, human reviewer IDs and a checks JSON file. Tab changes fields, Ctrl+U clears a field, Enter previews, Y applies, and Esc returns or cancels. Small terminals scroll the selected field; preview and result screens support arrow-key scrolling.
 
 Setup does not dispatch agents, execute repository scripts, download dependencies or create external records. It preserves existing `AGENTS.md`. Missing integration details produce incomplete readiness rather than invented values.
@@ -24,7 +26,55 @@ Install a versioned local binary and bundled bridges under a prefix you choose:
 ./target/release/softwarefactory install --prefix "$HOME/.local/softwarefactory" --apply
 ```
 
-The first command previews. The second writes `releases/0.1.0/` and a `bin/softwarefactory` launcher. Add that `bin` directory to your PATH yourself. Releases coexist; the launcher is never silently replaced, and a project/run pinned to another release refuses execution by this binary. Use that release's binary explicitly. Public distribution, signing and release publication are not configured.
+The first command previews. The second writes `releases/0.2.0/`, the bundled bridges, a SHA-256 manifest, and an initial `bin/softwarefactory` launcher. Add that `bin` directory to your PATH yourself. `install` preserves an existing launcher; `update --apply` explicitly selects a release. Version switching supports macOS and Linux.
+
+## Manage versions and update
+
+Once an updater-enabled release is installed, users can check and install future published releases directly from their terminal:
+
+```sh
+softwarefactory update --check
+softwarefactory update --apply
+softwarefactory --version
+```
+
+`update` without `--apply` only checks and previews. It uses the latest stable GitHub release from `Arpit160399/SoftwareFactory`, selects the native build, downloads its binary and bridges, verifies every file against the GitHub API's SHA-256 digest, and atomically switches the launcher. An installed binary detects its installation prefix automatically; `--prefix /absolute/path` overrides it. A standalone binary defaults to `$HOME/.local/softwarefactory`. Updates require `curl` and access to the public GitHub repository.
+
+Supported downloadable builds are Apple Silicon macOS, Intel macOS and x86-64 GNU Linux (built on Ubuntu 22.04). Drafts and prereleases are excluded. Missing releases, unsupported platforms, download failures and checksum mismatches produce errors while preserving the active release. GitHub's HTTPS release metadata is the trust source; publisher signing/notarization is not configured. A normal latest-version check never downgrades the active version.
+
+List installed releases, or explicitly select an installed or published version for rollback:
+
+```sh
+softwarefactory versions
+softwarefactory update --to 0.2.0 --apply
+```
+
+An already installed version can be selected offline. Old releases remain installed. New releases include local integrity manifests; legacy 0.1.0 installations are listed as `legacy_without_manifest`. Versions are immutable: a different build cannot overwrite the same version. Installation is serialized, and an interrupted activation can be retried.
+
+For developers installing their own new build, use the explicit local option:
+
+```sh
+cargo build --release --locked
+./target/release/softwarefactory update --local --prefix "$HOME/.local/softwarefactory"
+./target/release/softwarefactory update --local --prefix "$HOME/.local/softwarefactory" --apply
+```
+
+An older binary without the remote updater needs this one-time local upgrade (or installation of a downloaded updater-enabled binary). Future updates then use `softwarefactory update --apply`.
+
+Update each project's configuration separately, using the selected release:
+
+```sh
+softwarefactory --project /path/to/project project-update
+softwarefactory --project /path/to/project project-update --apply
+```
+
+The preview shows the old/new release, exact configuration changes and transaction ID. Applying reuses the saved profile and journals prior configuration for `rollback TRANSACTION --apply`. Manual edits, interrupted setup and unsupported schemas must be resolved first. Other projects and existing runs keep their version pins and snapshots; continue an older run with `releases/VERSION/softwarefactory`. Project rollback and launcher rollback are separate operations. Updating configuration grants no feature, merge or release approval.
+
+### Publish a version for terminal updates
+
+[The release workflow](.github/workflows/release.yml) builds and tests three native targets when a `v*` tag is pushed. The tag must exactly match the stable version in `Cargo.toml` and the built executable. It uploads the binaries and matching bridges to a **draft** GitHub release and verifies all five assets have GitHub SHA-256 digests. Review and publish that draft to make the update visible to users. Existing published releases are not overwritten.
+
+Maintainer steps: bump `Cargo.toml` and `Cargo.lock`, update `CHANGELOG.md`, commit the release, push the matching tag, then review and publish the completed draft. Creating a Git tag alone does not make an update available. The workflow has been added locally; no release was published by this change.
 
 ## Configure a project
 
@@ -54,6 +104,12 @@ Configuration lives in `.product-workflow/`:
 - `discovery/`, `harness/`: project-specific research and comparison records.
 
 Secrets are referenced by environment-variable names. Never place token values in profile arguments, product context, or agent output. Command stderr is withheld from error summaries. The native-check bridge redacts known secret environment values from retained logs. Large artifacts remain local; automatic retention/deletion and remote artifact hosting are not implemented.
+
+Notion Kanban progress tracking and its required setup are defined in [Notion Kanban prerequisites](docs/NOTION-KANBAN-PREREQUISITES.md). The bridge now supports task-card synchronization with a durable local queue as well as review pages and verified decisions. Live workspace permissions still need validation.
+
+## Repeat the whole workflow
+
+Use `workflow start "PRODUCT QUESTION"`, then `workflow run WORKFLOW_ID` to repeat discovery, proposal, approved development, human acceptance and retrospective across cycles. Each cycle requires fresh decisions. The loop saves progress, carries prior learning forward, and pauses at approvals, budgets or no actionable opportunity. Add `--review` to explicitly synchronize and poll the configured review source. See [the whole-workflow guide](docs/WHOLE-WORKFLOW.md) for stopping, resuming, cycle limits and command-runtime requirements.
 
 ## Run an approved feature
 
@@ -127,7 +183,7 @@ softwarefactory --project /path/to/project detach
 softwarefactory --project /path/to/project detach --apply
 ```
 
-Rollback and removal reject subsequent manual edits. Detach preserves app code, existing guidance, run evidence, discovery, harness records and shared releases. A moved project can be reconfigured; an active run with a different recorded root requires explicit migration rather than a guessed replacement. Automated active-run/schema migration is not provided in version 0.1.0.
+Rollback and removal reject subsequent manual edits. Detach preserves app code, existing guidance, run evidence, discovery, harness records and shared releases. A moved project can be reconfigured; an active run with a different recorded root requires explicit migration rather than a guessed replacement. Automated active-run/schema migration is not provided.
 
 ## Validation and limits
 

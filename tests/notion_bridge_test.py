@@ -19,6 +19,12 @@ class ProvenanceTests(unittest.TestCase):
         if path.startswith('/blocks/'):return iter([{'paragraph':{'rich_text':[{'plain_text':self.marker}]}}])
         raise AssertionError(path)
     def test_exact_human_source_passes(self):self.assertTrue(bridge.verify(self.claim,self.parent)['verified'])
+    def test_exact_human_harness_deferral_passes(self):
+        self.claim['action']=self.payload['action']='harness_defer'
+        self.assertTrue(bridge.verify(self.claim,self.parent)['verified'])
+    def test_deferral_cannot_be_reinterpreted_as_adoption(self):
+        self.payload['action']='harness_defer';self.claim['action']='harness_adopt'
+        with self.assertRaises(ValueError):bridge.verify(self.claim,self.parent)
     def test_bot_author_rejected(self):
         self.human='bot'
         with self.assertRaises(ValueError):bridge.verify(self.claim,self.parent)
@@ -31,4 +37,29 @@ class ProvenanceTests(unittest.TestCase):
     def test_fabricated_actor_rejected(self):
         claim=dict(self.claim,actor=str(uuid.uuid4()))
         with self.assertRaises(ValueError):bridge.verify(claim,self.parent)
+    def test_poll_uses_source_metadata_and_still_requires_human_verification(self):
+        from unittest.mock import patch
+        original=self.pages
+        def polling_pages(path):
+            if path=='/blocks/'+self.parent+'/children':
+                return iter([{'id':self.page,'child_page':{'title':'SoftwareFactory packet'}}])
+            return original(path)
+        bridge.pages=polling_pages
+        self.payload['actor']='forged-in-comment'
+        self.payload['decided_at']='forged-in-comment'
+        with patch.dict('os.environ',{'NOTION_PAGE_ID':self.parent}):
+            result=bridge.main(dict(operation='fetch_decisions',project_id='alpha',run_id=self.claim['run_id'],artifact_revision='rev1',actions=['build']))
+        self.assertEqual(result['decisions'],[self.claim])
+        self.human='bot'
+        with self.assertRaises(ValueError):bridge.verify(result['decisions'][0],self.parent)
+    def test_poll_ignores_stale_revision(self):
+        from unittest.mock import patch
+        original=self.pages
+        def polling_pages(path):
+            if path=='/blocks/'+self.parent+'/children':return iter([{'id':self.page,'child_page':{'title':'SoftwareFactory packet'}}])
+            return original(path)
+        bridge.pages=polling_pages
+        with patch.dict('os.environ',{'NOTION_PAGE_ID':self.parent}):
+            result=bridge.main(dict(operation='fetch_decisions',project_id='alpha',run_id=self.claim['run_id'],artifact_revision='new-revision',actions=['build']))
+        self.assertEqual(result,{'decisions':[]})
 if __name__=='__main__':unittest.main()

@@ -1350,13 +1350,14 @@ checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 
 [[package]]
 name = "softwarefactory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
  "crossterm",
  "fs2",
  "ratatui",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

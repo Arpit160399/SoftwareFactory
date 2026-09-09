@@ -33,6 +33,60 @@ pub fn templates() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+// Scope each submitted operation to its outer session without requiring nested locks.
+// Lookups, cancellation and authority verification remain possible after its deadline.
+fn workflow_deadline(root: &Path, request: &Value) -> Result<Option<u64>> {
+    if !matches!(request["operation"].as_str(), Some("dispatch" | "check")) {
+        return Ok(None);
+    }
+    let mut records = Vec::new();
+    if let Some(id) = request["workflow_id"].as_str() {
+        ensure!(uuid::Uuid::parse_str(id).is_ok(), "Invalid workflow ID");
+        records.push(safe_path(
+            root,
+            &format!("{CONFIG}/workflows/{id}/workflow.json"),
+        )?);
+    } else if request["run_id"].is_string() {
+        let directory = safe_path(root, &format!("{CONFIG}/workflows"))?;
+        if directory.is_dir() {
+            for entry in fs::read_dir(directory)? {
+                let name = entry?.file_name().to_string_lossy().into_owned();
+                if uuid::Uuid::parse_str(&name).is_ok() {
+                    let path =
+                        safe_path(root, &format!("{CONFIG}/workflows/{name}/workflow.json"))?;
+                    if path.is_file() {
+                        records.push(path);
+                    }
+                }
+            }
+        }
+    }
+    for path in records {
+        let record: Value = serde_json::from_slice(&fs::read(path)?)?;
+        if request["workflow_id"].is_string()
+            || record["cycles"]
+                .as_array()
+                .is_some_and(|cycles| cycles.iter().any(|c| c["run_id"] == request["run_id"]))
+        {
+            ensure!(
+                !record["stop_requested"].as_bool().unwrap_or(false)
+                    && !matches!(record["state"].as_str(), Some("stopped" | "completed")),
+                "Whole workflow no longer permits work"
+            );
+            let deadline = record["created_at"]
+                .as_u64()
+                .context("Missing workflow start")?
+                .saturating_add(
+                    record["max_seconds"]
+                        .as_u64()
+                        .context("Missing workflow budget")?,
+                );
+            return Ok(Some(deadline));
+        }
+    }
+    Ok(None)
+}
+
 /// A command is an explicitly configured trust boundary. JSON goes over stdin;
 /// stdout is one JSON response. No shell interpolation is performed.
 pub fn invoke(spec: &CommandSpec, root: &Path, request: &Value, seconds: u64) -> Result<Value> {
@@ -40,14 +94,15 @@ pub fn invoke(spec: &CommandSpec, root: &Path, request: &Value, seconds: u64) ->
         !spec.program.is_empty(),
         "Adapter command is not configured"
     );
-    if !matches!(
-        request["operation"].as_str(),
-        Some("cancel" | "cancel_check")
-    ) && let Some(id) = request.get("run_id").and_then(Value::as_str)
-    {
+    ensure!(
+        !command_cancelled(root, request)?,
+        "Cancellation pending; no new work can start"
+    );
+    let deadline = workflow_deadline(root, request)?;
+    if let Some(deadline) = deadline {
         ensure!(
-            !run_dir(root, id)?.join("cancel-request.json").exists(),
-            "Cancellation pending; no new work can start"
+            timestamp() < deadline,
+            "Whole-workflow elapsed-time budget exhausted"
         );
     }
     let tmp = std::env::temp_dir().join(format!("softwarefactory-{}", uuid::Uuid::new_v4()));
@@ -87,20 +142,11 @@ pub fn invoke(spec: &CommandSpec, root: &Path, request: &Value, seconds: u64) ->
             if let Some(status) = child.try_wait()? {
                 break status;
             }
-            let cancelled = request["operation"] != "cancel"
-                && request["operation"] != "cancel_check"
-                && request
-                    .get("run_id")
-                    .and_then(Value::as_str)
-                    .filter(|id| uuid::Uuid::parse_str(id).is_ok())
-                    .is_some_and(|id| {
-                        root.join(CONFIG)
-                            .join("runs")
-                            .join(id)
-                            .join("cancel-request.json")
-                            .exists()
-                    });
-            if cancelled || started.elapsed() >= Duration::from_secs(seconds) {
+            let cancelled = command_cancelled(root, request)?;
+            if cancelled
+                || deadline.is_some_and(|limit| timestamp() >= limit)
+                || started.elapsed() >= Duration::from_secs(seconds)
+            {
                 #[cfg(unix)]
                 {
                     let _ = Command::new("/bin/kill")
@@ -186,6 +232,18 @@ pub fn probe(root: &Path, p: &Profile) -> Result<Value> {
         verified["protocol_version"] == 1 && verified["attributable_decisions"] == true,
         "Review bridge cannot establish attributable decisions"
     );
+    if p.review.kind == "notion" {
+        let people = invoke(
+            review,
+            root,
+            &json!({"operation":"verify_reviewers","reviewers":p.review.reviewers}),
+            p.command_timeout_seconds,
+        )?;
+        ensure!(
+            people["verified"] == true,
+            "Configured Notion reviewers could not be verified"
+        );
+    }
     Ok(json!({"runtime":raw,"review":verified}))
 }
 
@@ -285,8 +343,24 @@ pub fn pinned_profile(run: &Run) -> Result<Profile> {
     Ok(serde_json::from_value(run.profile_snapshot.clone())?)
 }
 pub fn new_run(root: &Path, proposal: Proposal) -> Result<Run> {
+    new_run_with_id(root, proposal, &uuid::Uuid::new_v4().to_string())
+}
+pub fn new_run_with_id(root: &Path, proposal: Proposal, id: &str) -> Result<Run> {
+    ensure!(
+        uuid::Uuid::parse_str(id).is_ok(),
+        "Invalid reserved feature ID"
+    );
     let _lock = ProjectLock::acquire(root)?;
     let p = load_profile(root)?;
+    let existing = run_dir(root, id)?.join("run.json");
+    if existing.exists() {
+        let run = load_run(root, id)?;
+        ensure!(
+            serde_json::to_value(&run.proposal)? == serde_json::to_value(&proposal)?,
+            "Reserved feature ID has different proposal content"
+        );
+        return Ok(run);
+    }
     let lock = load_lock(root)?;
     ensure!(
         lock["core"] == VERSION,
@@ -330,7 +404,7 @@ pub fn new_run(root: &Path, proposal: Proposal) -> Result<Run> {
     }
     let template_map: BTreeMap<_, _> = templates().into_iter().collect();
     let pins = json!({"lock":lock,"source_baseline":source_snapshot(root)?,"guidance":configured_guidance(root,&p)?,"adapter_hashes":adapter_hashes(root,&p)?,"templates":template_map,"rubrics":pilot_scenarios(&p.template),"created_at":timestamp(),"root":fs::canonicalize(root)?});
-    let run = Run::new(
+    let mut run = Run::new(
         p.project_id.clone(),
         proposal,
         serde_json::to_value(&p)?,
@@ -341,6 +415,7 @@ pub fn new_run(root: &Path, proposal: Proposal) -> Result<Run> {
             max_elapsed_seconds: p.max_seconds,
         },
     )?;
+    run.id = id.into();
     save_run(root, &run)?;
     Ok(run)
 }
@@ -558,7 +633,13 @@ pub fn advance(root: &Path, id: &str) -> Result<Run> {
         "Moved project requires explicit run migration; refusing guessed workspace"
     );
     if run.stage == Stage::Blocked {
-        run.resume()?;
+        if let Err(error) = run.resume() {
+            if run.resume_stage == Some(Stage::Checking) {
+                run.resume_check_reconciliation(&run_dir(root, id)?)?;
+            } else {
+                return Err(error);
+            }
+        }
         save_run(root, &run)?;
     }
     if run.stage == Stage::Checking {
@@ -740,6 +821,16 @@ fn execute_checks(root: &Path, mut run: Run, p: &Profile) -> Result<Run> {
                 json!({"operation":"lookup_check","protocol_version":1,"project_id":run.project_id,"run_id":run.id,"idempotency_key":key,"check_id":check.id,"revision":revision})
             } else {
                 let request = json!({"operation":"check","protocol_version":1,"project_id":run.project_id,"run_id":run.id,"iteration":run.iteration,"idempotency_key":key,"check_id":check.id,"category":check.category,"criterion_ids":check.criterion_ids,"revision":revision});
+                ensure!(
+                    timestamp().saturating_sub(run.created_at) < run.budget.max_elapsed_seconds,
+                    "Feature elapsed budget exhausted before a new check"
+                );
+                if let Some(deadline) = workflow_deadline(root, &request)? {
+                    ensure!(
+                        timestamp() < deadline,
+                        "Whole-workflow elapsed budget exhausted before a new check"
+                    );
+                }
                 atomic(&intent_path, setup::json(&request)?.as_bytes())?;
                 request
             };
@@ -897,7 +988,7 @@ fn configured_guidance(root: &Path, p: &Profile) -> Result<Value> {
     }
     Ok(all)
 }
-fn adapter_hashes(root: &Path, p: &Profile) -> Result<BTreeMap<String, String>> {
+pub(crate) fn adapter_hashes(root: &Path, p: &Profile) -> Result<BTreeMap<String, String>> {
     let mut hashes = BTreeMap::new();
     let commands = std::iter::once(&p.runtime.command)
         .chain(p.review.command.iter())
@@ -958,8 +1049,50 @@ pub fn adopt_learning(root: &Path, id: &str, claim: DecisionClaim) -> Result<Val
     crate::learning::adopt(root, id, claim, &BridgeVerifier { root, profile: &p })
 }
 
+pub fn defer_learning(root: &Path, id: &str, claim: DecisionClaim) -> Result<Value> {
+    let record = crate::learning::read(root, id)?;
+    let run = load_run(
+        root,
+        record["run_id"]
+            .as_str()
+            .context("Missing originating run")?,
+    )?;
+    let p = pinned_profile(&run)?;
+    verify_adapters(root, &run, &p)?;
+    crate::learning::defer(root, id, claim, &BridgeVerifier { root, profile: &p })
+}
+
 /// Discovery remains a proposal-producing activity with no feature authority.
 pub fn discovery_start(root: &Path, question: &str) -> Result<Value> {
+    discovery_start_with_id(
+        root,
+        question,
+        &uuid::Uuid::new_v4().to_string(),
+        Value::Null,
+    )
+}
+pub fn discovery_load(root: &Path, id: &str) -> Result<Value> {
+    ensure!(uuid::Uuid::parse_str(id).is_ok(), "Invalid discovery ID");
+    let record: Value = serde_json::from_str(&fs::read_to_string(safe_path(
+        root,
+        &format!("{CONFIG}/discovery/{id}.json"),
+    )?)?)?;
+    ensure!(
+        record["id"] == id && record["project_id"] == load_profile(root)?.project_id,
+        "Discovery identity mismatch"
+    );
+    Ok(record)
+}
+pub fn discovery_start_with_id(
+    root: &Path,
+    question: &str,
+    id: &str,
+    context: Value,
+) -> Result<Value> {
+    ensure!(
+        uuid::Uuid::parse_str(id).is_ok(),
+        "Invalid reserved discovery ID"
+    );
     let _guard = ProjectLock::acquire(root)?;
     let p = load_profile(root)?;
     ensure!(p.discovery_enabled, "Discovery disabled by this profile");
@@ -967,8 +1100,25 @@ pub fn discovery_start(root: &Path, question: &str) -> Result<Value> {
         !question.trim().is_empty(),
         "Supply one focused product question"
     );
-    let id = uuid::Uuid::new_v4().to_string();
-    let record = json!({"schema_version":1,"id":id,"project_id":p.project_id,"question":question,"profile":p,"adapter_hashes":adapter_hashes(root,&p)?,"source":source_snapshot(root)?,"guidance":configured_guidance(root,&p)?,"templates":templates().into_iter().collect::<BTreeMap<_,_>>(),"created_at":timestamp(),"next_stage":0,"outputs":[],"pending":null,"status":"ready"});
+    let lock = load_lock(root)?;
+    ensure!(
+        lock["core"] == VERSION,
+        "Project pins another core release; explicitly update setup before discovery"
+    );
+    ensure!(
+        lock["profile_sha256"] == digest(setup::json(&p)?.as_bytes()),
+        "Profile changed outside reviewed setup"
+    );
+    let path = safe_path(root, &format!("{CONFIG}/discovery/{id}.json"))?;
+    if path.exists() {
+        let record = discovery_load(root, id)?;
+        ensure!(
+            record["question"] == question && record["workflow_context"] == context,
+            "Reserved discovery ID has different inputs"
+        );
+        return Ok(record);
+    }
+    let record = json!({"schema_version":1,"id":id,"project_id":p.project_id,"question":question,"workflow_context":context,"profile":p,"adapter_hashes":adapter_hashes(root,&p)?,"source":source_snapshot(root)?,"guidance":configured_guidance(root,&p)?,"templates":templates().into_iter().collect::<BTreeMap<_,_>>(),"created_at":timestamp(),"next_stage":0,"outputs":[],"pending":null,"status":"ready"});
     let path = safe_path(root, &format!("{CONFIG}/discovery/{id}.json"))?;
     atomic(&path, setup::json(&record)?.as_bytes())?;
     Ok(record)
@@ -988,7 +1138,9 @@ pub fn discovery_step(root: &Path, id: &str) -> Result<Value> {
         "Pinned discovery adapters changed"
     );
     ensure!(
-        timestamp().saturating_sub(record["created_at"].as_u64().unwrap_or(0)) < p.max_seconds,
+        !record["pending"].is_null()
+            || timestamp().saturating_sub(record["created_at"].as_u64().unwrap_or(0))
+                < p.max_seconds,
         "Discovery time budget exhausted"
     );
     let stage = record["next_stage"]
@@ -1006,12 +1158,31 @@ pub fn discovery_step(root: &Path, id: &str) -> Result<Value> {
     let role = roles[stage];
     let existed = !record["pending"].is_null();
     if !existed {
+        let capabilities = invoke(
+            &p.runtime.command,
+            root,
+            &json!({"operation":"capabilities","protocol_version":1,"workflow_id":record["workflow_context"]["workflow_id"]}),
+            p.command_timeout_seconds,
+        )?;
+        let caps: Capabilities = serde_json::from_value(capabilities)?;
+        ensure!(
+            caps.protocol_version == 1
+                && caps.idempotent_dispatch
+                && caps.lookup
+                && caps.cancel
+                && caps.enforces_scope
+                && caps.enforces_read_only
+                && roles
+                    .iter()
+                    .all(|role| caps.roles.iter().any(|supported| supported == role)),
+            "Runtime lacks safe discovery roles or recovery capabilities"
+        );
         let key = uuid::Uuid::new_v4().to_string();
-        record["pending"] = json!({"operation":"dispatch","protocol_version":1,"project_id":p.project_id,"idempotency_key":key,"context_id":uuid::Uuid::new_v4().to_string(),"role":role,"permissions":"read_only","protected_paths":[CONFIG,".git"],"root":root,"question":record["question"],"previous_outputs":record["outputs"],"profile":p,"guidance":record["guidance"],"template":record["templates"][role]});
+        record["pending"] = json!({"operation":"dispatch","protocol_version":1,"project_id":p.project_id,"idempotency_key":key,"context_id":uuid::Uuid::new_v4().to_string(),"role":role,"permissions":"read_only","protected_paths":[CONFIG,".git"],"workflow_id":record["workflow_context"]["workflow_id"],"workflow_context":record["workflow_context"],"root":root,"question":record["question"],"previous_outputs":record["outputs"],"profile":p,"guidance":record["guidance"],"template":record["templates"][role]});
         atomic(&path, setup::json(&record)?.as_bytes())?;
     }
     let request = if existed {
-        json!({"operation":"lookup","protocol_version":1,"idempotency_key":record["pending"]["idempotency_key"]})
+        json!({"operation":"lookup","protocol_version":1,"idempotency_key":record["pending"]["idempotency_key"],"workflow_id":record["workflow_context"]["workflow_id"]})
     } else {
         record["pending"].clone()
     };
@@ -1027,7 +1198,8 @@ pub fn discovery_step(root: &Path, id: &str) -> Result<Value> {
     );
     ensure!(
         response["status"] == "completed"
-            && response["context_id"] == record["pending"]["context_id"],
+            && response["context_id"] == record["pending"]["context_id"]
+            && response["result"]["role"] == record["pending"]["role"],
         "Discovery pending or context mismatch; next step reconciles same dispatch"
     );
     let output = response["result"]["result"].clone();
@@ -1086,4 +1258,405 @@ pub fn discovery_step(root: &Path, id: &str) -> Result<Value> {
     });
     atomic(&path, setup::json(&record)?.as_bytes())?;
     Ok(record)
+}
+
+fn command_cancelled(root: &Path, request: &Value) -> Result<bool> {
+    if matches!(
+        request["operation"].as_str(),
+        Some("cancel" | "cancel_check")
+    ) {
+        return Ok(false);
+    }
+    if let Some(id) = request.get("run_id").and_then(Value::as_str)
+        && run_dir(root, id)?.join("cancel-request.json").exists()
+    {
+        return Ok(true);
+    }
+    if let Some(id) = request.get("workflow_id").and_then(Value::as_str) {
+        ensure!(
+            uuid::Uuid::parse_str(id).is_ok(),
+            "Invalid workflow identity"
+        );
+        if safe_path(root, &format!("{CONFIG}/workflows/{id}/stop-request.json"))?.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+pub fn verified_acceptance(root: &Path, id: &str) -> Result<Run> {
+    let mut run = load_run(root, id)?;
+    let p = pinned_profile(&run)?;
+    verify_adapters(root, &run, &p)?;
+    run.reverify_decisions(&BridgeVerifier { root, profile: &p })?;
+    ensure!(
+        run.stage == Stage::Accepted
+            && run
+                .candidate_revision()
+                .is_some_and(|revision| run.has_authority(DecisionAction::Accept, revision)),
+        "Feature acceptance lacks current verified human authority"
+    );
+    verify_candidate(root, &run)?;
+    Ok(run)
+}
+pub fn verified_adoption(root: &Path, id: &str) -> Result<Value> {
+    let record = verified_harness_disposition(root, id)?;
+    ensure!(
+        record["disposition"] == "adoption_authorized",
+        "Harness adoption was not authorized"
+    );
+    Ok(record)
+}
+pub fn verified_harness_disposition(root: &Path, id: &str) -> Result<Value> {
+    let record = crate::learning::read(root, id)?;
+    let run = load_run(
+        root,
+        record["run_id"].as_str().context("Missing source run")?,
+    )?;
+    let p = pinned_profile(&run)?;
+    verify_adapters(root, &run, &p)?;
+    let action = match record["disposition"].as_str() {
+        Some("adoption_authorized") => DecisionAction::HarnessAdopt,
+        Some("adoption_deferred") => DecisionAction::HarnessDefer,
+        _ => bail!("Harness candidate has no human disposition"),
+    };
+    let claims: Vec<DecisionClaim> = serde_json::from_value(record["decisions"].clone())?;
+    let mut found = false;
+    for claim in claims {
+        if claim.action == action
+            && claim.artifact_revision == record["revision"]
+            && claim.project_id == run.project_id
+            && claim.run_id == run.id
+        {
+            VerifiedDecision::verify(claim, &BridgeVerifier { root, profile: &p })?;
+            found = true;
+        }
+    }
+    ensure!(
+        found,
+        "Harness adoption has no verified matching human decision"
+    );
+    Ok(record)
+}
+
+pub fn retrospective(
+    root: &Path,
+    workflow_id: &str,
+    cycle_number: u32,
+    id: &str,
+    discovery_id: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
+    let _guard = ProjectLock::acquire(root)?;
+    for value in [workflow_id, id, discovery_id] {
+        ensure!(
+            uuid::Uuid::parse_str(value).is_ok(),
+            "Invalid retrospective identity"
+        );
+    }
+    let discovery = discovery_load(root, discovery_id)?;
+    let run = run_id.map(|id| verified_acceptance(root, id)).transpose()?;
+    let profile: Profile = if let Some(run) = &run {
+        pinned_profile(run)?
+    } else {
+        serde_json::from_value(discovery["profile"].clone())?
+    };
+    let pinned_hashes = if let Some(run) = &run {
+        run.pins["adapter_hashes"].clone()
+    } else {
+        discovery["adapter_hashes"].clone()
+    };
+    ensure!(
+        pinned_hashes == serde_json::to_value(adapter_hashes(root, &profile)?)?,
+        "Retrospective adapter differs from recorded version"
+    );
+    let path = safe_path(root, &format!("{CONFIG}/retrospectives/{id}.json"))?;
+    let existed = path.exists();
+    let mut record: Value = if existed {
+        let saved: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        ensure!(
+            saved["workflow_id"] == workflow_id
+                && saved["cycle"] == cycle_number
+                && saved["discovery_id"] == discovery_id
+                && saved["run_id"] == json!(run_id),
+            "Retrospective retry identity collision"
+        );
+        saved
+    } else {
+        let capabilities = invoke(
+            &profile.runtime.command,
+            root,
+            &json!({"operation":"capabilities","protocol_version":1,"workflow_id":workflow_id}),
+            profile.command_timeout_seconds,
+        )?;
+        let caps: Capabilities = serde_json::from_value(capabilities)?;
+        ensure!(
+            caps.protocol_version == 1
+                && caps.idempotent_dispatch
+                && caps.lookup
+                && caps.cancel
+                && caps.enforces_scope
+                && caps.roles.contains(&"harness-reviewer".to_string()),
+            "Runtime lacks bounded harness-reviewer capability"
+        );
+        let artifact_directory =
+            safe_path(root, &format!("{CONFIG}/retrospectives/{id}/artifacts"))?;
+        fs::create_dir_all(&artifact_directory)?;
+        let feedback = if let Some(run) = &run {
+            let mut entries = vec![];
+            for entry in fs::read_dir(run_dir(root, &run.id)?)? {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().starts_with("feedback-") {
+                    entries.push(serde_json::from_str::<Value>(&fs::read_to_string(
+                        entry.path(),
+                    )?)?);
+                }
+            }
+            entries
+        } else {
+            vec![]
+        };
+        let snapshot = source_snapshot(root)?;
+        let pending = json!({"operation":"dispatch","protocol_version":1,"project_id":profile.project_id,"workflow_id":workflow_id,"cycle":cycle_number,"idempotency_key":id,"context_id":uuid::Uuid::new_v4().to_string(),"role":"harness-reviewer","permissions":"artifact_write","allowed_paths":[artifact_directory],"protected_paths":["all source files",format!("{CONFIG}/runs"),format!("{CONFIG}/workflows")],"artifact_directory":artifact_directory,"root":root,"profile":profile,"discovery":discovery,"feature":run,"feedback":feedback,"template":discovery["templates"]["harness-reviewer"],"required_output":{"disposition":"no_change, deferred, or candidate","summary":"evidence-based conclusion","evidence_refs":"nonempty project-relative references to inspected artifacts","next_question":"optional scoped next discovery question","learning_input":"candidate requires actual paired trial evidence accepted by learning::create"}});
+        let saved = json!({"schema_version":1,"id":id,"workflow_id":workflow_id,"cycle":cycle_number,"project_id":profile.project_id,"discovery_id":discovery_id,"run_id":run_id,"source":snapshot,"pending":pending,"response":null,"output":null});
+        atomic(&path, setup::json(&saved)?.as_bytes())?;
+        saved
+    };
+    ensure!(
+        record["source"] == source_snapshot(root)?,
+        "Source changed outside retrospective artifact scope"
+    );
+    if !record["output"].is_null() {
+        return Ok(record["output"].clone());
+    }
+    let response = if !record["response"].is_null() {
+        record["response"].clone()
+    } else {
+        let request = if existed {
+            json!({"operation":"lookup","protocol_version":1,"idempotency_key":id,"workflow_id":workflow_id})
+        } else {
+            record["pending"].clone()
+        };
+        invoke(
+            &profile.runtime.command,
+            root,
+            &request,
+            profile.command_timeout_seconds,
+        )?
+    };
+    ensure!(
+        record["source"] == source_snapshot(root)?,
+        "Harness reviewer changed product source; restore the recorded snapshot"
+    );
+    ensure!(
+        response["status"] == "completed"
+            && response["context_id"] == record["pending"]["context_id"]
+            && response["result"]["role"] == "harness-reviewer",
+        "Retrospective pending or result identity mismatch; recovery uses the same job"
+    );
+    record["response"] = response.clone();
+    atomic(&path, setup::json(&record)?.as_bytes())?;
+    let output = response["result"]["result"].clone();
+    ensure!(
+        output["summary"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty()),
+        "Retrospective must explain its conclusion"
+    );
+    ensure!(
+        output["disposition"]
+            .as_str()
+            .is_some_and(|s| ["no_change", "deferred", "candidate"].contains(&s)),
+        "Invalid retrospective disposition"
+    );
+    let evidence = output["evidence_refs"]
+        .as_array()
+        .context("Retrospective needs inspectable evidence references")?;
+    ensure!(!evidence.is_empty(), "Retrospective has no evidence");
+    for reference in evidence {
+        let reference = reference
+            .as_str()
+            .context("Invalid retrospective evidence reference")?;
+        let evidence_path = safe_path(root, reference)?;
+        ensure!(
+            evidence_path.is_file() && fs::metadata(evidence_path)?.len() > 0,
+            "Retrospective evidence is missing or empty"
+        );
+    }
+    if output["disposition"] == "candidate" {
+        ensure!(
+            run.is_some() && output["learning_input"].is_object(),
+            "Adoption candidates require a feature run and actual comparison evidence"
+        );
+    }
+    record["output"] = output.clone();
+    atomic(&path, setup::json(&record)?.as_bytes())?;
+    Ok(output)
+}
+
+pub fn cancel_workflow_job(
+    root: &Path,
+    workflow_id: &str,
+    discovery_id: &str,
+    retrospective_id: &str,
+    run_id: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        uuid::Uuid::parse_str(workflow_id).is_ok(),
+        "Invalid workflow ID"
+    );
+    if let Some(id) = run_id
+        && run_dir(root, id)?.join("run.json").exists()
+    {
+        let child = load_run(root, id)?;
+        if !matches!(child.stage, Stage::Accepted | Stage::Cancelled) {
+            let stopped = cancel(root, id, "Outer workflow stopped".into())?;
+            ensure!(
+                stopped.stage == Stage::Cancelled,
+                "Feature cancellation is not yet confirmed"
+            );
+        }
+    }
+    let discovery_path = safe_path(root, &format!("{CONFIG}/discovery/{discovery_id}.json"))?;
+    if discovery_path.exists() {
+        let record = discovery_load(root, discovery_id)?;
+        let p: Profile = serde_json::from_value(record["profile"].clone())?;
+        ensure!(
+            record["adapter_hashes"] == serde_json::to_value(adapter_hashes(root, &p)?)?,
+            "Discovery bridge changed before cancellation"
+        );
+        if !record["pending"].is_null() {
+            let reply = invoke(
+                &p.runtime.command,
+                root,
+                &json!({"operation":"cancel","protocol_version":1,"idempotency_key":record["pending"]["idempotency_key"]}),
+                p.command_timeout_seconds,
+            )?;
+            ensure!(
+                reply["status"] == "cancelled" || reply["status"] == "completed",
+                "Discovery termination is unknown"
+            );
+        }
+    }
+    ensure!(
+        uuid::Uuid::parse_str(retrospective_id).is_ok(),
+        "Invalid retrospective ID"
+    );
+    let path = safe_path(
+        root,
+        &format!("{CONFIG}/retrospectives/{retrospective_id}.json"),
+    )?;
+    if path.exists() {
+        let record: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+        if record["output"].is_null() {
+            let p: Profile = serde_json::from_value(record["pending"]["profile"].clone())?;
+            let discovery = discovery_load(root, discovery_id)?;
+            ensure!(
+                discovery["adapter_hashes"] == serde_json::to_value(adapter_hashes(root, &p)?)?,
+                "Retrospective bridge changed before cancellation"
+            );
+            let reply = invoke(
+                &p.runtime.command,
+                root,
+                &json!({"operation":"cancel","protocol_version":1,"idempotency_key":retrospective_id}),
+                p.command_timeout_seconds,
+            )?;
+            ensure!(
+                reply["status"] == "cancelled" || reply["status"] == "completed",
+                "Retrospective termination is unknown"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Polling supplies claims only; every claim still passes the independent verifier.
+pub fn poll_feature_decisions(root: &Path, id: &str) -> Result<Run> {
+    let run = load_run(root, id)?;
+    let p = pinned_profile(&run)?;
+    verify_adapters(root, &run, &p)?;
+    let (revision, actions) = match run.stage {
+        Stage::AwaitingBuildApproval => {
+            (run.proposal.revision.clone(), vec![DecisionAction::Build])
+        }
+        Stage::AwaitingAcceptance => (
+            run.candidate_revision()
+                .context("Missing candidate")?
+                .to_string(),
+            vec![DecisionAction::Accept, DecisionAction::RequestChanges],
+        ),
+        _ => return Ok(run),
+    };
+    let response = invoke(
+        p.review.command.as_ref().context("Review bridge missing")?,
+        root,
+        &json!({"operation":"fetch_decisions","protocol_version":1,"project_id":run.project_id,"run_id":id,"artifact_revision":revision,"actions":actions}),
+        p.command_timeout_seconds,
+    )?;
+    let claims: Vec<DecisionClaim> = serde_json::from_value(response["decisions"].clone())
+        .context("Review bridge must return a decisions array")?;
+    let mut result = run;
+    for claim in claims {
+        if claim.project_id == result.project_id
+            && claim.run_id == id
+            && claim.artifact_revision == revision
+            && actions.contains(&claim.action)
+        {
+            result = decision(root, id, claim)?;
+            break;
+        }
+    }
+    Ok(result)
+}
+pub fn poll_harness_decisions(root: &Path, id: &str) -> Result<Value> {
+    let record = crate::learning::read(root, id)?;
+    if record["disposition"] != "candidate" {
+        return Ok(record);
+    }
+    let run_id = record["run_id"].as_str().context("Missing source run")?;
+    let run = load_run(root, run_id)?;
+    let p = pinned_profile(&run)?;
+    verify_adapters(root, &run, &p)?;
+    let response = invoke(
+        p.review.command.as_ref().context("Review bridge missing")?,
+        root,
+        &json!({"operation":"fetch_decisions","protocol_version":1,"project_id":run.project_id,"run_id":run_id,"artifact_revision":record["revision"],"actions":["harness_adopt","harness_defer"]}),
+        p.command_timeout_seconds,
+    )?;
+    let claims: Vec<DecisionClaim> = serde_json::from_value(response["decisions"].clone())?;
+    for claim in claims {
+        if claim.project_id == run.project_id
+            && claim.run_id == run_id
+            && claim.artifact_revision == record["revision"]
+            && matches!(
+                claim.action,
+                DecisionAction::HarnessAdopt | DecisionAction::HarnessDefer
+            )
+        {
+            return if claim.action == DecisionAction::HarnessDefer {
+                crate::learning::defer(root, id, claim, &BridgeVerifier { root, profile: &p })
+            } else {
+                adopt_learning(root, id, claim)
+            };
+        }
+    }
+    Ok(record)
+}
+pub fn sync_harness_review(root: &Path, id: &str) -> Result<Value> {
+    let record = crate::learning::read(root, id)?;
+    let run_id = record["run_id"].as_str().context("Missing source run")?;
+    let run = load_run(root, run_id)?;
+    let p = pinned_profile(&run)?;
+    verify_adapters(root, &run, &p)?;
+    let packet = json!({"project_id":run.project_id,"id":run_id,"proposal":run.proposal,"stage":"harness_adoption","iteration":run.iteration,"iterations":run.iterations,"decisions":record["decisions"],"harness_candidate":record});
+    let response = invoke(
+        p.review.command.as_ref().context("Review bridge missing")?,
+        root,
+        &json!({"operation":"submit_packet","protocol_version":1,"idempotency_key":format!("{}:{}:harness:{}",run.project_id,run_id,id),"packet":packet}),
+        p.command_timeout_seconds,
+    )?;
+    atomic(
+        &safe_path(root, &format!("{CONFIG}/review-links/{id}.json"))?,
+        setup::json(&response)?.as_bytes(),
+    )?;
+    Ok(response)
 }

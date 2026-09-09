@@ -43,7 +43,7 @@ Discovery uses the same dispatch/lookup protocol with roles `research`, `opportu
 
 Capabilities must report `protocol_version: 1` and `attributable_decisions: true`.
 
-`submit_packet` carries `idempotency_key` and immutable `packet`. Repeated calls must reconcile the same packet, with a stable `reference` returned. External writes happen only on the explicit `sync-review` command.
+`submit_packet` carries `idempotency_key` and immutable `packet`. Repeated calls must reconcile the same packet, with a stable `reference` returned. External writes require explicit synchronization (`sync-review`, `workflow run --review`, or a confirmed TUI Run/Start). Kanban writes additionally require the reviewed profile to enable them.
 
 `verify_decision` receives a `claim` with `id`, `project_id`, `run_id`, `actor`, `decided_at`, `artifact_revision`, `source`, `action`. Return `verified: true`, an exactly matching authoritative `claim`, `actor_type: "human"`, and nonempty `source_evidence` only after reading the trusted human decision. Do not echo unverified input. The core validates project/run/action/stage/revision separately. Previous saved decisions are reverified before further execution. Unavailable provenance pauses dependent work.
 
@@ -74,3 +74,11 @@ The native bridge intentionally does not restart an interrupted unknown command.
 ## Fixtures
 
 `examples/fixture_bridge.py` requires `.softwarefactory-synthetic-fixture` in the selected temporary repository. Its model and approval identities are synthetic. It implements a real failing-first repair loop against `result.txt`, with saved receipts and evidence, to exercise package behavior. Never use it as the review adapter of a real product.
+
+## Optional Kanban operations
+
+The bundled review bridge also accepts `kanban_capabilities` (config → ready + resolved property IDs) and `sync_card` (config, card, sequence, may_create, reference → status, record_key, sequence, reference). `config` contains existing Notion database/data-source IDs and property mappings. The standalone optional `kanban` profile field is omitted when absent so old profile hashes remain stable.
+
+A successful card update must be read back against its exact key, scope, managed properties and sequence. Unknown creation must query the original key and never blindly create a replacement. A definite pre-write failure can return `no_create_attempt: true`; an ambiguous timeout cannot. `retry_after` and `rate_limited` control persisted backoff. Older sequences, duplicate keys and missing/archived prior cards require reconciliation. Human notes/unmapped properties are not patched. Supported operation assumes a single synchronization writer per workflow because Notion does not provide an atomic unique-key upsert in this implementation.
+
+`verify_reviewers` reads configured Notion user IDs and accepts only human users; it does not grant a workflow decision. See [TUI configuration](TUI.md) for the exact property types and terminal controls.

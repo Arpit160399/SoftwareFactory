@@ -223,6 +223,8 @@ Superseding an approved proposal does not transfer approval automatically. Likew
 
 ## 7. Notion review model for the Meal Map profile
 
+The Kanban progress view, required integration inputs, database properties and readiness checks are specified in [Notion Kanban prerequisites](docs/NOTION-KANBAN-PREREQUISITES.md). The current TUI and board adapter implementation is described in [the TUI guide](docs/TUI.md); live integration readiness remains separate from offline validation.
+
 The following are proposed linked record types; they need not each become a separate database in the first version.
 
 | Record | Essential content |

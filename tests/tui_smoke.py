@@ -24,7 +24,7 @@ def rendered(data):
 def session(root,apply=False):
     master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',32,110,0,0))
     before=termios.tcgetattr(slave)
-    process=subprocess.Popen([binary,'--project',str(root),'tui'],stdin=slave,stdout=slave,stderr=slave,env=dict(os.environ,TERM='xterm-256color'))
+    process=subprocess.Popen([binary,'--project',str(root),'tui','--setup'],stdin=slave,stdout=slave,stderr=slave,env=dict(os.environ,TERM='xterm-256color'))
     output=bytearray()
     def wait_for(text):
         deadline=time.monotonic()+10

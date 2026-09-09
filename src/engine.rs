@@ -124,6 +124,7 @@ pub enum DecisionAction {
     Merge,
     Release,
     HarnessAdopt,
+    HarnessDefer,
     RequestChanges,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,9 +482,9 @@ impl Run {
                     "authority is for a stale revision"
                 );
             }
-            DecisionAction::HarnessAdopt => {
+            DecisionAction::HarnessAdopt | DecisionAction::HarnessDefer => {
                 bail!(
-                    "harness adoption requires a separate evaluated harness candidate; feature authority cannot adopt harness changes"
+                    "harness decisions require a separate evaluated harness candidate; feature authority cannot decide harness changes"
                 );
             }
             DecisionAction::RequestChanges => {
@@ -825,6 +826,74 @@ impl Run {
             .ok_or_else(|| anyhow::anyhow!("missing resume point"))?;
         self.blocked_reason = None;
         self.event("Resumed from recorded stage");
+        Ok(())
+    }
+    /// Recover only a check whose exact submission intent is already durable.
+    /// The adapter still gates every fresh check independently; this method grants
+    /// no additional time, role dispatches, or permission to create a new job.
+    pub fn resume_check_reconciliation(&mut self, state_directory: &Path) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        ensure!(
+            self.stage == Stage::Blocked && self.resume_stage == Some(Stage::Checking),
+            "Only blocked check execution can use check reconciliation"
+        );
+        ensure!(
+            self.has_authority(DecisionAction::Build, &self.proposal.revision),
+            "Verified build approval is required for check reconciliation"
+        );
+        ensure!(
+            state_directory
+                .file_name()
+                .is_some_and(|name| name == self.id.as_str()),
+            "Check directory belongs to another run"
+        );
+        let revision = self
+            .candidate_revision()
+            .ok_or_else(|| anyhow::anyhow!("Missing frozen candidate"))?;
+        let prefix = format!("check-intent-{}-{}-", self.id, self.iteration);
+        let mut found = false;
+        for entry in fs::read_dir(state_directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(&prefix) || !name.ends_with(".json") {
+                continue;
+            }
+            ensure!(
+                entry.file_type()?.is_file() && entry.metadata()?.len() <= 16 * 1024 * 1024,
+                "Check intent must be a bounded regular file"
+            );
+            let request: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let check_id = request["check_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Check intent has no identity"))?;
+            let configured = self.required_checks().iter().any(|id| id == check_id)
+                || self.profile_snapshot["checks"]
+                    .as_array()
+                    .is_some_and(|checks| checks.iter().any(|check| check["id"] == check_id));
+            let key = format!(
+                "{}-{}-{:x}",
+                self.id,
+                self.iteration,
+                Sha256::digest(check_id.as_bytes())
+            );
+            ensure!(
+                configured
+                    && request["operation"] == "check"
+                    && request["project_id"] == self.project_id
+                    && request["run_id"] == self.id
+                    && request["iteration"] == self.iteration
+                    && request["revision"] == revision
+                    && request["idempotency_key"] == key
+                    && name == format!("check-intent-{key}.json"),
+                "Check intent does not match this project, run, iteration, candidate and check"
+            );
+            found = true;
+        }
+        ensure!(found, "No saved check intent authorises reconciliation");
+        self.stage = Stage::Checking;
+        self.resume_stage = None;
+        self.blocked_reason = None;
+        self.event("Resumed exact saved check intent for reconciliation; budgets unchanged");
         Ok(())
     }
     /// Operator recovery is explicit because the external command may already have performed work.
@@ -1252,5 +1321,30 @@ mod tests {
             assert_eq!(r.stage, Stage::Planning);
         }
         assert_eq!(r.iteration, 4);
+    }
+    #[test]
+    fn expired_check_recovery_requires_an_exact_saved_intent() {
+        use sha2::{Digest, Sha256};
+        let parent = tempfile::tempdir().unwrap();
+        let mut r = run();
+        approve(&mut r);
+        checking(&mut r);
+        let directory = parent.path().join(&r.id);
+        fs::create_dir(&directory).unwrap();
+        r.created_at = now().saturating_sub(r.budget.max_elapsed_seconds + 1);
+        r.block("Check job submission was interrupted".into());
+        assert!(r.resume().is_err());
+        assert!(r.resume_check_reconciliation(&directory).is_err());
+        let key = format!("{}-{}-{:x}", r.id, r.iteration, Sha256::digest(b"build"));
+        let path = directory.join(format!("check-intent-{key}.json"));
+        let mut request = json!({"operation":"check","project_id":r.project_id,"run_id":r.id,"iteration":r.iteration,"check_id":"build","revision":"wrong-revision","idempotency_key":key});
+        fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+        assert!(r.resume_check_reconciliation(&directory).is_err());
+        request["revision"] = json!("code-1");
+        fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+        r.resume_check_reconciliation(&directory).unwrap();
+        assert_eq!(r.stage, Stage::Checking);
+        assert!(r.budget_problem().is_some());
+        assert!(r.begin_role(Role::Reviewer).is_err());
     }
 }

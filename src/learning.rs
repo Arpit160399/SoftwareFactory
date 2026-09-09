@@ -190,8 +190,22 @@ fn validate_trial(
 }
 
 pub fn create(root: &Path, run_id: &str, input: Value) -> Result<Value> {
+    create_with_id(root, run_id, input, &Uuid::new_v4().to_string())
+}
+pub fn create_with_id(root: &Path, run_id: &str, input: Value, id: &str) -> Result<Value> {
+    ensure!(Uuid::parse_str(id).is_ok(), "Invalid reserved harness ID");
     let _guard = ProjectLock::acquire(root)?;
     let run = crate::adapters::load_run(root, run_id)?;
+    if record_path(root, id)?.exists() {
+        let existing = read(root, id)?;
+        ensure!(
+            existing["run_id"] == run_id
+                && existing["input"]
+                    == serde_json::to_value(serde_json::from_value::<CandidateInput>(input)?)?,
+            "Reserved harness ID has different comparison inputs"
+        );
+        return Ok(existing);
+    }
     let input: CandidateInput = serde_json::from_value(input)?;
     ensure!(
         matches!(
@@ -301,7 +315,7 @@ pub fn create(root: &Path, run_id: &str, input: Value) -> Result<Value> {
             _ => unchanged += 1,
         }
     }
-    let id = Uuid::new_v4().to_string();
+    let id = id.to_string();
     let mut artifacts = vec![];
     // Validate everything before writing the isolated immutable evidence package.
     for (index, (source_ref, bytes)) in files.into_iter().enumerate() {
@@ -361,17 +375,52 @@ pub fn adopt(
     claim: DecisionClaim,
     verifier: &impl DecisionVerifier,
 ) -> Result<Value> {
+    decide_candidate(
+        root,
+        id,
+        claim,
+        verifier,
+        DecisionAction::HarnessAdopt,
+        "adoption_authorized",
+    )
+}
+
+/// Close this exact evaluated candidate without changing the installed harness.
+pub fn defer(
+    root: &Path,
+    id: &str,
+    claim: DecisionClaim,
+    verifier: &impl DecisionVerifier,
+) -> Result<Value> {
+    decide_candidate(
+        root,
+        id,
+        claim,
+        verifier,
+        DecisionAction::HarnessDefer,
+        "adoption_deferred",
+    )
+}
+
+fn decide_candidate(
+    root: &Path,
+    id: &str,
+    claim: DecisionClaim,
+    verifier: &impl DecisionVerifier,
+    action: DecisionAction,
+    disposition: &str,
+) -> Result<Value> {
     let _guard = ProjectLock::acquire(root)?;
     let mut record = load(root, id)?;
     ensure!(
-        claim.action == DecisionAction::HarnessAdopt,
-        "Feature acceptance does not grant harness adoption"
+        claim.action == action,
+        "Decision action does not match this harness operation"
     );
     ensure!(
         claim.project_id == record.project_id
             && claim.run_id == record.run_id
             && claim.artifact_revision == record.revision,
-        "Adoption must match this project, source run and exact evaluated candidate"
+        "Harness decision must match this project, source run and exact evaluated candidate"
     );
     VerifiedDecision::verify(claim.clone(), verifier)?;
     if let Some(existing) = record.decisions.iter().find(|d| d.id == claim.id) {
@@ -383,10 +432,10 @@ pub fn adopt(
     }
     ensure!(
         record.disposition == "candidate",
-        "Only an evaluated adoption candidate can be adopted"
+        "Only an undecided evaluated candidate can receive a harness disposition"
     );
     record.decisions.push(claim);
-    record.disposition = "adoption_authorized".into();
+    record.disposition = disposition.into();
     setup::atomic(&record_path(root, id)?, setup::json(&record)?.as_bytes())?;
     Ok(serde_json::to_value(record)?)
 }
@@ -498,6 +547,77 @@ mod tests {
             json!({})
         );
         assert_eq!(list(root).unwrap().len(), 1);
+    }
+    #[test]
+    fn verified_deferral_preserves_harness_and_replays_without_duplicate_decisions() {
+        let (dir, run) = fixture();
+        let root = dir.path();
+        let before = fs::read(root.join(format!("{CONFIG}/lock.json"))).unwrap();
+        let record = create(root, &run, candidate_input(root, &run)).unwrap();
+        let id = record["id"].as_str().unwrap();
+        let mut decision = claim(&record);
+        decision.action = DecisionAction::HarnessDefer;
+        let deferred = defer(root, id, decision.clone(), &Human).unwrap();
+        assert_eq!(deferred["disposition"], "adoption_deferred");
+        assert_eq!(deferred["revision"], record["revision"]);
+        assert_eq!(deferred["artifacts"], record["artifacts"]);
+        assert_eq!(deferred["comparison_summary"], record["comparison_summary"]);
+        assert_eq!(defer(root, id, decision.clone(), &Human).unwrap(), deferred);
+        assert_eq!(deferred["decisions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            fs::read(root.join(format!("{CONFIG}/lock.json"))).unwrap(),
+            before
+        );
+        assert_eq!(
+            crate::adapters::load_run(root, &run).unwrap().pins,
+            json!({})
+        );
+        decision.actor = "another-human".into();
+        assert!(defer(root, id, decision, &Human).is_err());
+        assert!(adopt(root, id, claim(&record), &Human).is_err());
+    }
+    #[test]
+    fn deferral_rejects_wrong_scope_action_untrusted_source_and_damaged_evidence() {
+        let (dir, run) = fixture();
+        let root = dir.path();
+        let record = create(root, &run, candidate_input(root, &run)).unwrap();
+        let id = record["id"].as_str().unwrap();
+        for invalid in 0..5 {
+            let mut decision = claim(&record);
+            decision.action = DecisionAction::HarnessDefer;
+            match invalid {
+                0 => decision.action = DecisionAction::HarnessAdopt,
+                1 => decision.project_id = "another-project".into(),
+                2 => decision.run_id = Uuid::new_v4().to_string(),
+                3 => decision.artifact_revision = "stale-candidate".into(),
+                _ => decision.source = "agent:approved".into(),
+            }
+            assert!(defer(root, id, decision, &Human).is_err());
+        }
+        assert_eq!(read(root, id).unwrap()["disposition"], "candidate");
+        file(
+            root,
+            record["artifacts"][0]["snapshot_ref"].as_str().unwrap(),
+            b"changed",
+        );
+        let mut decision = claim(&record);
+        decision.action = DecisionAction::HarnessDefer;
+        assert!(defer(root, id, decision, &Human).is_err());
+    }
+    #[test]
+    fn deferral_cannot_rewrite_an_adoption_decision() {
+        let (dir, run) = fixture();
+        let root = dir.path();
+        let record = create(root, &run, candidate_input(root, &run)).unwrap();
+        let id = record["id"].as_str().unwrap();
+        adopt(root, id, claim(&record), &Human).unwrap();
+        let mut decision = claim(&record);
+        decision.action = DecisionAction::HarnessDefer;
+        assert!(defer(root, id, decision, &Human).is_err());
+        assert_eq!(
+            read(root, id).unwrap()["disposition"],
+            "adoption_authorized"
+        );
     }
     #[test]
     fn rejects_missing_held_out_and_standalone_score_evidence() {

@@ -1,0 +1,25 @@
+{
+  "enabled": false,
+  "database_id": "REPLACE_WITH_DATABASE_UUID",
+  "data_source_id": "REPLACE_WITH_DATA_SOURCE_UUID",
+  "properties": {
+    "name": "Name",
+    "status": "Status",
+    "record_key": "Record key",
+    "project_id": "Project ID",
+    "workflow_id": "Workflow ID",
+    "cycle": "Cycle",
+    "kind": "Type",
+    "stage": "Stage",
+    "agent": "Current agent",
+    "iteration": "Iteration",
+    "summary": "Summary",
+    "blocker": "Blocker",
+    "next_action": "Next action",
+    "revision": "Artifact revision",
+    "event_time": "Event time",
+    "synced_at": "Last synced",
+    "sequence": "Event sequence",
+    "review_url": "Review packet"
+  }
+}

@@ -70,6 +70,8 @@ pub struct Profile {
     pub command_timeout_seconds: u64,
     pub allowed_paths: Vec<String>,
     pub discovery_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kanban: Option<crate::kanban::Config>,
 }
 impl Profile {
     pub fn template(name: &str, id: &str) -> Self {
@@ -131,6 +133,7 @@ impl Profile {
             command_timeout_seconds: 600,
             allowed_paths: vec![".".into()],
             discovery_enabled: true,
+            kanban: None,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -173,6 +176,9 @@ impl Profile {
                 !env.is_empty() && env.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
                 "Use a credential environment variable name, not its value"
             );
+        }
+        if let Some(config) = &self.kanban {
+            config.validate()?;
         }
         let mut ids = std::collections::HashSet::new();
         for c in &self.checks {
@@ -331,6 +337,23 @@ pub fn load_lock(root: &Path) -> Result<serde_json::Value> {
         &text_at(root, &format!("{CONFIG}/lock.json"))?.context("Missing version lock")?,
     )?)
 }
+/// Reuse the reviewed profile and transaction journal when adopting a release.
+/// Runs and other projects are outside the setup transaction's target allow-list.
+pub fn update_preview(root: &Path) -> Result<SetupPlan> {
+    let profile = load_profile(root)?;
+    let lock = load_lock(root)?;
+    ensure!(
+        lock["schema_version"] == 1 && lock["adapter_protocol"] == 1,
+        "Unsupported project schema or adapter protocol; no automatic migration is available"
+    );
+    let previous = lock["core"]
+        .as_str()
+        .context("Missing project core version")?;
+    semver::Version::parse(previous).context("Invalid project core version")?;
+    let mut plan = preview(root, &profile)?;
+    plan.action = format!("update {previous} -> {VERSION}");
+    Ok(plan)
+}
 pub fn preview(root: &Path, profile: &Profile) -> Result<SetupPlan> {
     profile.validate()?;
     let root = fs::canonicalize(root)?;
@@ -371,7 +394,7 @@ pub fn preview(root: &Path, profile: &Profile) -> Result<SetupPlan> {
         ),
         (
             format!("{CONFIG}/.gitignore"),
-            "/runs/\n/transactions/\n/.lock\n".into(),
+            "/runs/\n/transactions/\n/discovery/\n/workflows/\n/retrospectives/\n/harness/\n/kanban/\n/console-probe.json\n/review-links/\n/.lock\n/.workflow-lock\n".into(),
         ),
     ]);
     let mut ownership = Ownership::default();
@@ -656,6 +679,13 @@ pub fn readiness(root: &Path, p: &Profile) -> Readiness {
         blockers.push(format!(
             "Credential environment variable {env} is unavailable"
         ));
+    }
+    if p.review.kind == "notion" {
+        for name in ["NOTION_TOKEN", "NOTION_PAGE_ID"] {
+            if std::env::var_os(name).is_none() {
+                blockers.push(format!("Set {name} in the runner environment"));
+            }
+        }
     }
     if p.checks.is_empty() {
         blockers.push("Define the project's required verification checks".into());

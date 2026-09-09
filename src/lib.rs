@@ -4,3 +4,9 @@ pub mod learning;
 pub mod setup;
 pub mod tui;
 pub mod versions;
+pub mod workflow;
+pub mod workflow_cli;
+
+pub mod console;
+pub mod kanban;
+pub mod setup_tui;

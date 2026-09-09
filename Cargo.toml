@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Project-scoped product workflow coordinator and terminal setup wizard"
 license = "MIT"
+repository = "https://github.com/Arpit160399/SoftwareFactory"
 
 [dependencies]
 anyhow = "1"
@@ -18,5 +19,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 fs2 = "0.4"
 semver = "1"
 
-[dev-dependencies]
 tempfile = "3"

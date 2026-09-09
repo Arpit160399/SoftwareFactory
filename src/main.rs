@@ -1,10 +1,10 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use softwarefactory::{
     adapters,
     engine::{DecisionClaim, Proposal},
     setup::{self, Profile},
-    tui,
+    tui, versions,
 };
 use std::path::PathBuf;
 #[derive(Parser)]
@@ -20,8 +20,23 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
-    /// Open the keyboard-driven project setup wizard.
-    Tui,
+    /// Coordinate the entire product workflow across repeated cycles.
+    Workflow {
+        #[command(subcommand)]
+        command: softwarefactory::workflow_cli::WorkflowCommand,
+    },
+    /// Open the workflow control panel, or just its setup wizard.
+    Tui {
+        #[arg(long)]
+        setup: bool,
+    },
+    /// Inspect local board synchronization or explicitly retry configured board writes.
+    Board {
+        #[arg(long)]
+        sync: bool,
+        #[arg(long)]
+        probe: bool,
+    },
     /// Print a profile template; fill in commands, reviewers and checks.
     Template {
         #[arg(default_value = "generic")]
@@ -94,8 +109,36 @@ enum Commands {
     Learning { id: Option<String> },
     /// Verify human adoption of an exact evaluated harness candidate.
     Adopt { id: String, file: PathBuf },
+    /// Verify a human decision to defer an evaluated harness change.
+    DeferHarness { id: String, file: PathBuf },
     /// Print the canonical source revision used by agent and check bridges.
     Snapshot,
+    /// List installed releases and the active launcher version.
+    Versions {
+        #[arg(long)]
+        prefix: Option<PathBuf>,
+    },
+    /// Check published releases; --apply downloads, verifies and activates an update.
+    Update {
+        #[arg(long)]
+        prefix: Option<PathBuf>,
+        /// Exact installed or published version; also supports explicit rollback.
+        #[arg(long)]
+        to: Option<String>,
+        /// Check for a newer release without installing it (the default).
+        #[arg(long, conflicts_with = "apply")]
+        check: bool,
+        /// Install and activate this locally built binary instead of downloading.
+        #[arg(long, conflicts_with = "to")]
+        local: bool,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Preview adopting this binary's version in the selected project's configuration.
+    ProjectUpdate {
+        #[arg(long)]
+        apply: bool,
+    },
     /// Install this binary as a versioned user-local release, under an explicit prefix.
     Install {
         #[arg(long)]
@@ -122,9 +165,38 @@ fn main() {
 }
 fn execute() -> Result<()> {
     let cli = Cli::parse();
-    let root = std::fs::canonicalize(&cli.project).context("Project directory does not exist")?;
-    match cli.command.unwrap_or(Commands::Tui) {
-        Commands::Tui => tui::run(&root)?,
+    // Machine-level version commands also work outside an existing project.
+    let machine_command = matches!(
+        &cli.command,
+        Some(Commands::Install { .. } | Commands::Update { .. } | Commands::Versions { .. })
+    );
+    let root = if machine_command {
+        cli.project.clone()
+    } else {
+        std::fs::canonicalize(&cli.project).context("Project directory does not exist")?
+    };
+    match cli.command.unwrap_or(Commands::Tui { setup: false }) {
+        Commands::Workflow { command } => softwarefactory::workflow_cli::execute(&root, command)?,
+        Commands::Tui { setup: false } => tui::run(&root)?,
+        Commands::Tui { setup: true } => {
+            softwarefactory::setup_tui::run(&root)?;
+        }
+        Commands::Board { sync, probe } => {
+            if probe {
+                print(&softwarefactory::kanban::probe(&root)?)?;
+            }
+            if sync {
+                let state = softwarefactory::kanban::sync(&root)?;
+                print(&state)?;
+                anyhow::ensure!(
+                    state.error.is_none(),
+                    "Notion synchronization is pending; inspect board status and resolve the recorded cause"
+                );
+            }
+            if !sync && !probe {
+                print(&softwarefactory::kanban::state(&root)?)?;
+            }
+        }
         Commands::Template { name, id } => {
             let p = Profile::template(&name, &id);
             p.validate()?;
@@ -144,6 +216,9 @@ fn execute() -> Result<()> {
             print(&setup::readiness(&root, &p))?;
             if probe {
                 print(&adapters::probe(&root, &p)?)?;
+                if p.kanban.is_some() {
+                    print(&softwarefactory::kanban::probe(&root)?)?;
+                }
             }
         }
         Commands::SetupRecover { rollback } => println!(
@@ -216,71 +291,86 @@ fn execute() -> Result<()> {
             &id,
             read::<DecisionClaim>(&file)?,
         )?)?,
+        Commands::DeferHarness { id, file } => print(&adapters::defer_learning(
+            &root,
+            &id,
+            read::<DecisionClaim>(&file)?,
+        )?)?,
         Commands::Snapshot => print(&adapters::source_snapshot(&root)?)?,
+        Commands::Versions { prefix } => {
+            let prefix = prefix.map(Ok).unwrap_or_else(versions::default_prefix)?;
+            print(&versions::list(&prefix)?)?;
+        }
         Commands::Install { prefix, apply } => {
-            ensure!(prefix.is_absolute(), "Installation prefix must be absolute");
-            let exe = std::env::current_exe()?;
-            let dest = prefix
-                .join("releases")
-                .join(setup::VERSION)
-                .join("softwarefactory");
-            let launch = prefix.join("bin/softwarefactory");
-            println!(
-                "Release: {}\nLauncher: {}",
-                dest.display(),
-                launch.display()
-            );
+            let plan = versions::preview(&prefix, None, false)?;
+            print(&plan)?;
             if apply {
-                ensure!(
-                    !dest.exists(),
-                    "Release already installed; existing releases are immutable"
-                );
-                let release = dest.parent().unwrap();
-                std::fs::create_dir_all(release.parent().unwrap())?;
-                let staging = release
-                    .parent()
-                    .unwrap()
-                    .join(format!(".staging-{}", uuid::Uuid::new_v4()));
-                std::fs::create_dir(&staging)?;
-                std::fs::copy(exe, staging.join("softwarefactory"))?;
-                std::fs::create_dir(staging.join("bridges"))?;
-                std::fs::write(
-                    staging.join("bridges/notion_review.py"),
-                    include_str!("../bridges/notion_review.py"),
-                )?;
-                std::fs::write(
-                    staging.join("bridges/native_check.py"),
-                    include_str!("../bridges/native_check.py"),
-                )?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(
-                        staging.join("softwarefactory"),
-                        std::fs::Permissions::from_mode(0o755),
-                    )?;
-                }
-                std::fs::rename(staging, release)?;
-                std::fs::create_dir_all(launch.parent().unwrap())?;
-                if std::fs::symlink_metadata(&launch).is_err() {
-                    #[cfg(unix)]
-                    {
-                        std::os::unix::fs::symlink(&dest, &launch)?;
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        std::fs::copy(&dest, &launch)?;
-                    }
-                } else {
-                    println!(
-                        "Existing launcher retained. Run {} to select this release.",
-                        dest.display()
-                    );
-                }
+                versions::apply(&plan)?;
                 println!(
                     "Installed {}. Add {} to PATH.",
                     setup::VERSION,
-                    launch.parent().unwrap().display()
+                    plan.prefix.join("bin").display()
+                );
+            }
+        }
+        Commands::Update {
+            prefix,
+            to,
+            check: _,
+            local,
+            apply,
+        } => {
+            let prefix = prefix.map(Ok).unwrap_or_else(versions::default_prefix)?;
+            let installed = if let Some(to) = &to {
+                versions::list(&prefix)?
+                    .releases
+                    .iter()
+                    .any(|release| &release.version == to)
+            } else {
+                false
+            };
+            if local || installed {
+                let plan = versions::preview(&prefix, to.as_deref(), true)?;
+                print(&plan)?;
+                if apply {
+                    versions::apply(&plan)?;
+                    println!(
+                        "Active release: {}. Project pins are preserved.",
+                        plan.to_version
+                    );
+                }
+            } else {
+                eprintln!("Checking published Software Factory releases...");
+                let update = versions::remote::check(&prefix, to.as_deref())?;
+                print(&update)?;
+                if !update.update_available {
+                    println!("Already up to date; no newer release is available.");
+                } else if apply {
+                    eprintln!(
+                        "Downloading and verifying Software Factory {}...",
+                        update.to_version
+                    );
+                    versions::remote::apply(&update)?;
+                    println!(
+                        "Updated to {}. Project pins are preserved; use project-update to adopt this release in a project.",
+                        update.to_version
+                    );
+                } else {
+                    println!(
+                        "Update available: {} -> {}. Run the same command with --apply to install it.",
+                        update.from_version, update.to_version
+                    );
+                }
+            }
+        }
+        Commands::ProjectUpdate { apply } => {
+            let plan = setup::update_preview(&root)?;
+            print(&plan)?;
+            if apply {
+                setup::apply(&plan)?;
+                println!(
+                    "Project configured for {}. Existing runs retain their original release pins.",
+                    setup::VERSION
                 );
             }
         }
