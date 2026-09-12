@@ -1,6 +1,6 @@
 //! Shared console read model and responsive worker. No UI handler performs network work.
 use crate::{
-    adapters, kanban, setup,
+    adapters, issues, kanban, setup,
     workflow::{self, Workflow, WorkflowState},
 };
 use anyhow::{Context, Result, ensure};
@@ -30,6 +30,8 @@ pub struct Snapshot {
     pub board_enabled: bool,
     pub problem: Option<String>,
     pub settings: String,
+    pub issues: Option<issues::QueueStatus>,
+    pub issue_problem: Option<String>,
 }
 impl Snapshot {
     pub fn read(root: &Path) -> Self {
@@ -141,6 +143,16 @@ impl Snapshot {
                     Ok(w) => result.workflows = w,
                     Err(e) => result.problem = Some(format!("Cannot read workflow history: {e}")),
                 }
+                match setup::safe_path(root, &format!("{}/issues/queue.json", setup::CONFIG)) {
+                    Ok(path) if path.exists() => match issues::status(root) {
+                        Ok(queue) => result.issues = Some(queue),
+                        Err(e) => {
+                            result.issue_problem = Some(format!("Cannot read GitHub issues: {e}"))
+                        }
+                    },
+                    Err(e) => result.issue_problem = Some(e.to_string()),
+                    _ => {}
+                }
                 match kanban::cards(root) {
                     Ok(c) => result.cards = c,
                     Err(e) => result.problem = Some(format!("Cannot read task details: {e}")),
@@ -201,7 +213,9 @@ pub fn probe(root: &Path) -> Result<String> {
     Ok(format!("Runtime: {runtime_detail}\nNotion: {board_detail}"))
 }
 pub fn tick(root: &Path, id: &str, review: bool) -> Result<Workflow> {
-    let mut state = workflow::advance(root, id)?;
+    review_state(root, workflow::advance(root, id)?, review)
+}
+fn review_state(root: &Path, mut state: Workflow, review: bool) -> Result<Workflow> {
     if review {
         let cycle = state.current_cycle();
         match state.state {
@@ -209,7 +223,7 @@ pub fn tick(root: &Path, id: &str, review: bool) -> Result<Workflow> {
                 let child = cycle.run_id.as_deref().context("Missing feature")?;
                 adapters::sync_review(root, child)?;
                 adapters::poll_feature_decisions(root, child)?;
-                state = workflow::load(root, id)?;
+                state = workflow::load(root, &state.id)?;
             }
             WorkflowState::AwaitingAdoption => {
                 let child = cycle.learning_id.as_deref().context("Missing comparison")?;
@@ -232,6 +246,10 @@ pub enum Action {
     Sync,
     Versions,
     UpdateCheck,
+    ScanIssues(String, Option<String>),
+    RunIssues,
+    ResumeIssue(String),
+    RetryIssue(u64),
     Shutdown,
 }
 pub enum Event {
@@ -239,11 +257,31 @@ pub enum Event {
     Message(String),
     Running(Option<String>),
     Busy(bool),
+    IssueMonitoring(bool),
     Closed,
 }
 pub struct Worker {
     pub tx: mpsc::Sender<Action>,
     pub rx: mpsc::Receiver<Event>,
+}
+struct IssueMonitor {
+    repository: String,
+    label: Option<String>,
+    last_scan: Option<Instant>,
+}
+impl IssueMonitor {
+    fn tick(&mut self, root: &Path) -> Result<Option<Workflow>> {
+        if self
+            .last_scan
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
+        {
+            issues::scan(root, &self.repository, self.label.as_deref())?;
+            self.last_scan = Some(Instant::now());
+        }
+        issues::advance(root)?
+            .map(|state| review_state(root, state, true))
+            .transpose()
+    }
 }
 pub fn worker(root: PathBuf) -> Worker {
     let (tx, commands) = mpsc::channel();
@@ -265,6 +303,7 @@ pub fn worker(root: PathBuf) -> Worker {
     });
     std::thread::spawn(move || {
         let mut active: Option<String> = None;
+        let mut issue_monitor: Option<IssueMonitor> = None;
         let mut next = Instant::now();
         let mut refresh = Instant::now();
         let send_snapshot = || {
@@ -285,7 +324,10 @@ pub fn worker(root: PathBuf) -> Worker {
                         Action::Refresh => Ok("Project refreshed".into()),
                         Action::Probe => probe(&root),
                         Action::Start(question, limit) => {
-                            ensure!(active.is_none(), "Pause the active runner first");
+                            ensure!(
+                                active.is_none() && issue_monitor.is_none(),
+                                "Pause the active runner first"
+                            );
                             let p = setup::load_profile(&root)?;
                             let ready = setup::readiness(&root, &p);
                             ensure!(
@@ -299,7 +341,10 @@ pub fn worker(root: PathBuf) -> Worker {
                             Ok("Workflow started; human decisions remain required".into())
                         }
                         Action::Run(id) => {
-                            ensure!(active.is_none(), "Runner is already active");
+                            ensure!(
+                                active.is_none() && issue_monitor.is_none(),
+                                "Runner is already active"
+                            );
                             let state = workflow::load(&root, &id)?;
                             ensure!(
                                 !state.is_terminal(),
@@ -313,12 +358,17 @@ pub fn worker(root: PathBuf) -> Worker {
                             Ok("Runner active; configured review and board synchronization enabled".into())
                         }
                         Action::Resume(id) => {
+                            ensure!(
+                                active.is_none() && issue_monitor.is_none(),
+                                "Pause the active runner first"
+                            );
                             workflow::resume(&root, &id)?;
                             active = Some(id);
                             Ok("Resumed from the saved stage".into())
                         }
                         Action::Pause => {
                             active = None;
+                            issue_monitor = None;
                             Ok("Paused between stages; progress is saved".into())
                         }
                         Action::Sync => {
@@ -335,6 +385,58 @@ pub fn worker(root: PathBuf) -> Worker {
                             let plan = crate::versions::remote::check(&prefix, None)?;
                             setup::json(&plan)
                         }
+                        Action::ScanIssues(repository, label) => {
+                            ensure!(
+                                active.is_none() && issue_monitor.is_none(),
+                                "Pause the runner before changing issue intake"
+                            );
+                            let queue = issues::scan(&root, &repository, label.as_deref())?;
+                            Ok(format!(
+                                "GitHub scan complete: {} matching tasks. R runs the issue loop.",
+                                queue.tasks.iter().filter(|t| t.eligible).count()
+                            ))
+                        }
+                        Action::RunIssues | Action::ResumeIssue(_) => {
+                            ensure!(
+                                active.is_none() && issue_monitor.is_none(),
+                                "Pause the active runner first"
+                            );
+                            let p = setup::load_profile(&root)?;
+                            let ready = setup::readiness(&root, &p);
+                            ensure!(
+                                ready.ready && p.discovery_enabled,
+                                "Issue loop needs discovery and complete project setup: {}",
+                                ready.blockers.join("; ")
+                            );
+                            probe(&root)?;
+                            let queue = issues::load(&root)?;
+                            if let Action::ResumeIssue(id) = action {
+                                ensure!(
+                                    queue
+                                        .tasks
+                                        .iter()
+                                        .any(|t| t.workflow_id.as_deref() == Some(&id)),
+                                    "Workflow is not in this issue queue"
+                                );
+                                workflow::resume(&root, &id)?;
+                            }
+                            issue_monitor = Some(IssueMonitor {
+                                repository: queue.repository,
+                                label: queue.label,
+                                last_scan: None,
+                            });
+                            Ok("Issue loop running; GitHub is checked every 30s between stages. Human decisions remain required.".into())
+                        }
+                        Action::RetryIssue(number) => {
+                            ensure!(
+                                active.is_none() && issue_monitor.is_none(),
+                                "Pause the active runner first"
+                            );
+                            issues::retry(&root, number)?;
+                            Ok(format!(
+                                "Issue #{number} queued for a fresh attempt. R runs the issue loop."
+                            ))
+                        }
                         Action::Shutdown => unreachable!(),
                     }
                 })();
@@ -342,6 +444,7 @@ pub fn worker(root: PathBuf) -> Worker {
                     result.unwrap_or_else(|e| format!("Action failed: {e}")),
                 ));
                 let _ = events.send(Event::Running(active.clone()));
+                let _ = events.send(Event::IssueMonitoring(issue_monitor.is_some()));
                 let _ = events.send(Event::Busy(false));
                 send_snapshot();
                 next = Instant::now();
@@ -350,19 +453,24 @@ pub fn worker(root: PathBuf) -> Worker {
                 closed.store(true, std::sync::atomic::Ordering::Release);
                 break;
             }
-            if let Some(id) = active.clone()
-                && Instant::now() >= next
-            {
+            if (active.is_some() || issue_monitor.is_some()) && Instant::now() >= next {
                 let _ = events.send(Event::Busy(true));
-                match tick(&root, &id, true) {
-                    Ok(state) => {
-                        if state.is_terminal()
+                let result = if let Some(monitor) = &mut issue_monitor {
+                    monitor.tick(&root)
+                } else {
+                    tick(&root, active.as_deref().expect("active workflow"), true).map(Some)
+                };
+                match result {
+                    Ok(Some(state)) => {
+                        active = Some(state.id.clone());
+                        if (state.is_terminal() && issue_monitor.is_none())
                             || matches!(
                                 state.state,
                                 WorkflowState::Blocked | WorkflowState::WaitingForOpportunity
                             )
                         {
                             active = None;
+                            issue_monitor = None;
                         }
                         next = Instant::now()
                             + if state.is_waiting() {
@@ -371,8 +479,13 @@ pub fn worker(root: PathBuf) -> Worker {
                                 Duration::from_millis(100)
                             };
                     }
+                    Ok(None) => {
+                        active = None;
+                        next = Instant::now() + Duration::from_secs(1);
+                    }
                     Err(e) => {
                         active = None;
+                        issue_monitor = None;
                         let _=events.send(Event::Message(format!("Runner paused: {e}. Inspect the saved stage, resolve the cause, then Run or Resume.")));
                     }
                 }
@@ -395,6 +508,7 @@ pub fn worker(root: PathBuf) -> Worker {
                     }
                 }
                 let _ = events.send(Event::Running(active.clone()));
+                let _ = events.send(Event::IssueMonitoring(issue_monitor.is_some()));
                 let _ = events.send(Event::Busy(false));
                 send_snapshot();
                 refresh = Instant::now();

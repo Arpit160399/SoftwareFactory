@@ -1,0 +1,32 @@
+ SOFTWARE FACTORY   github-tui                                                                                
+ GitHub issue loop active                                                                                     
+                                                                                                              
+ Home │ Workflow │ Tasks │ Review │ History │ Settings │ Issues                                               
+                                                                                                              
+┌ Issue details · Fix and regression evidence ───────────────────────────────────────────────────────────────┐
+│#17 · Save result without losing existing content                                                           │
+│https://github.com/owner/repo/issues/17                                                                     │
+│                                                                                                            │
+│State: awaiting acceptance                                                                                  │
+│Intake: eligible                                                                                            │
+│Original report changed: No                                                                                 │
+│                                                                                                            │
+│Workflow: 95f7ae0d-96ff-43d8-adb2-3187a408a3cd                                                              │
+│Run: 6c0dbed9-da86-4b31-bc50-fd0bc66df54e                                                                   │
+│                                                                                                            │
+│Fix and regression evidence                                                                                 │
+│Attempt 2 · AwaitingAcceptance                                                                              │
+│ISSUE-FIX: Reproduce save then read verified result                                                         │
+│Checks: result                                                                                              │
+│ISSUE-REGRESSION: Existing saved content remains preserved                                                  │
+│Checks: regression                                                                                          │
+│result: Completed / Passed                                                                                  │
+│regression: Completed / Passed                                                                              │
+│                                                                                                            │
+│Review and Tasks show the linked proposal and evidence. Human acceptance remains required.                  │
+│                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Scroll · Esc Back · W Workflow                                                                             
+R Run · B Resume · T Retry · X Stop                                                                           
+Space Pause · Tab Screens · Q Close                                                                           
+Issue loop running; GitHub is checked every 30s between stages. Human decisions remain required.              

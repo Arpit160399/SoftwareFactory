@@ -51,6 +51,7 @@ def main():
         if receipt.exists():return json.loads(receipt.read_text())
         if op=='lookup_check':return dict(status='unknown')
         passed=(root/'result.txt').read_text()=='verified\n'
+        if req['check_id']=='regression':passed=(root/'existing.txt').read_text()=='preserved\n'
         response=dict(check_id=req['check_id'],revision=req['revision'],outcome='passed' if passed else 'failed',environment='synthetic',fixture_version='1',visible_outcome='result file',persisted_outcome='verified' if passed else 'incorrect')
         receipt.write_text(json.dumps(response));return response
     jobs=root/'.product-workflow'/'fixture-jobs';jobs.mkdir(parents=True,exist_ok=True)
@@ -66,6 +67,8 @@ def main():
         iteration=req['input']['iteration']['number']
         fail=(root/'.fixture-fail-first').exists() and iteration==1
         (root/'result.txt').write_text('incorrect\n' if fail else 'verified\n')
+        if (root/'.fixture-regression-first').exists():
+            (root/'existing.txt').write_text('broken\n' if iteration==1 else 'preserved\n')
         artifact=pathlib.Path(req['artifact_directory']);diff=artifact/f'diff-{iteration}.txt';guidance=artifact/f'guidance-{iteration}.txt'
         diff.write_text('result.txt: '+('incorrect' if fail else 'verified'));guidance.write_text('No AGENTS.md changes')
         result=dict(summary='Created result file',candidate_revision=snapshot(root),diff_ref=str(diff),guidance_diff_ref=str(guidance),known_gaps=[])
@@ -87,6 +90,10 @@ def main():
         required=[c['id'] for c in req['profile']['checks'] if c['required']]
         cycle=(req.get('workflow_context') or {}).get('cycle',1)
         result={'proposal':{'revision':f'proposal-cycle-{cycle}','title':'Synthetic visible and saved result','scope':'Write only result.txt and inspect its saved value','criteria':[{'id':'C1','description':'Persist verified result','required':True,'check_ids':required}],'journeys':[{'id':'J1','description':'Read result after write','criterion_ids':['C1'],'check_ids':required,'required':True}],'required_checks':required}}
+        if (req.get('workflow_context') or {}).get('github_issue') and not (root/'.fixture-missing-issue-contract').exists():
+            result['proposal']['scope']='Write result.txt and preserve existing.txt'
+            result['proposal']['criteria']=[{'id':'ISSUE-FIX','description':'Reproduce save then read verified result','required':True,'check_ids':['result']},{'id':'ISSUE-REGRESSION','description':'Existing saved content remains preserved','required':True,'check_ids':['regression']}]
+            result['proposal']['journeys']=[{'id':'fix','description':'Save and reopen result','criterion_ids':['ISSUE-FIX'],'check_ids':['result'],'required':True},{'id':'existing','description':'Reopen existing content after saving result','criterion_ids':['ISSUE-REGRESSION'],'check_ids':['regression'],'required':True}]
     else:result={'disposition':'no_action','reason':'Synthetic evidence cannot justify a real feature'}
     response=dict(status='completed',context_id=req['context_id'],effective_model=req.get('model') or 'fixture-default',effective_reasoning=req.get('reasoning','default'),result=dict(role=role,result=result))
     job.write_text(json.dumps(response));return response

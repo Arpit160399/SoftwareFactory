@@ -394,7 +394,7 @@ pub fn preview(root: &Path, profile: &Profile) -> Result<SetupPlan> {
         ),
         (
             format!("{CONFIG}/.gitignore"),
-            "/runs/\n/transactions/\n/discovery/\n/workflows/\n/retrospectives/\n/harness/\n/kanban/\n/console-probe.json\n/review-links/\n/.lock\n/.workflow-lock\n".into(),
+            "/runs/\n/transactions/\n/discovery/\n/workflows/\n/issues/\n/retrospectives/\n/harness/\n/kanban/\n/console-probe.json\n/review-links/\n/.lock\n/.workflow-lock\n/.issues-lock\n".into(),
         ),
     ]);
     let mut ownership = Ownership::default();

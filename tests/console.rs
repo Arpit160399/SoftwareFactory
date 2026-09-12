@@ -67,7 +67,7 @@ fn empty_and_narrow_screens_render_without_losing_navigation() {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         let mut app = tui::App::default();
         app.snapshot = console::Snapshot::read(d.path());
-        for tab in 0..6 {
+        for tab in 0..7 {
             app.tab = tab;
             terminal.draw(|f| tui::draw(f, &app, d.path())).unwrap();
             let buffer = terminal.backend().buffer();
@@ -278,4 +278,62 @@ fn evidence_preview_is_bounded_and_cannot_read_another_run_or_source_file() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn issues_selection_survives_refresh_and_errors_keep_visible_records() {
+    use softwarefactory::issues::{QueueStatus, TaskStatus};
+    let (dir, _) = project("issue-view");
+    let task = |number| TaskStatus {
+        number,
+        title: format!("Save issue {number}"),
+        url: format!("https://github.com/owner/repo/issues/{number}"),
+        eligible: true,
+        source_changed: false,
+        workflow_id: None,
+        run_id: None,
+        state: "queued".into(),
+        reason: None,
+    };
+    let mut app = tui::App::default();
+    app.tab = 6;
+    app.selected = 1;
+    app.detail = true;
+    app.snapshot.issues = Some(QueueStatus {
+        repository: "owner/repo".into(),
+        label: Some("bug".into()),
+        last_scan_at: Some(timestamp()),
+        last_scan_error: None,
+        tasks: vec![task(2), task(3)],
+    });
+    let mut newer = app.snapshot.clone();
+    newer.issues.as_mut().unwrap().tasks.insert(0, task(1));
+    app.apply_snapshot(newer);
+    assert_eq!(app.selected, 2);
+    assert!(app.detail);
+    app.apply_snapshot(console::Snapshot {
+        issue_problem: Some("Queue temporarily unreadable".into()),
+        ..Default::default()
+    });
+    assert_eq!(app.snapshot.issues.as_ref().unwrap().tasks.len(), 3);
+    assert_eq!(app.selected, 2);
+    for (width, height) in [(110, 32), (70, 22), (44, 16), (42, 12)] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        app.detail = false;
+        terminal.draw(|f| tui::draw(f, &app, dir.path())).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("G Scan"));
+        assert!(text.contains("Q Close"));
+        assert!(
+            text.contains("Save issue"),
+            "issue rows must stay visible at {width}x{height}: {text}"
+        );
+    }
 }

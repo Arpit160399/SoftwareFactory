@@ -49,7 +49,7 @@ Use the six frontmatter tokens. Cyan indicates focus/selection; amber attention;
 All roles use the user's terminal font. Bold labels establish hierarchy, normal text carries content, and muted text carries supporting hints. Font family and size are controlled by the terminal, not the application. User Unicode input is retained.
 
 ## Layout
-Fixed header, tab strip, one scrollable content area and four-row shortcut/status footer. At 100 columns show three task columns, at 68 show two, below that show one. Left/right traverses every board column. Below 42×12 show a resize instruction while preserving safe close behavior. Lists own their scroll; details use up/down. Footer actions remain reachable on every screen.
+Fixed header, tab strip, one scrollable content area and four-row shortcut/status footer. At 100 columns show three task columns, at 68 show two, below that show one. Left/right traverses every board column. Below 42×12 show a resize instruction while preserving safe close behavior. Lists own their scroll; details use up/down. Footer actions remain reachable on every screen. The Issues list uses one-line rows when only one content row fits; its intake summary yields space to the list on short terminals.
 
 ## Elevation & Depth
 Square borders and a clear modal surface; no shadows or animation. Modal input owns keyboard focus and Esc returns to its source.
@@ -63,9 +63,9 @@ Ready, Missing, Failed and Not checked are distinct words. Busy operations retai
 ### Buttons and actions
 Text shortcuts use consistent verbs. Start/Run explain configured external synchronization. Stop explains cancellation and unknown termination. Closing waits for the bounded operation, then pauses scheduling. Setup previews exact local changes before Y applies.
 ### Navigation and data display
-Six screens: Home, Workflow, Tasks, Review, History, Settings. Task selection and detail links reference real saved identities. Empty lists explain the next useful action.
+Seven screens: Home, Workflow, Tasks, Review, History, Settings, Issues. Existing 1–6 shortcuts stay stable; 7 opens Issues. Below 80 columns the tab strip shows the selected screen and a Tab navigation hint. Task selection and detail links reference real saved identities. Empty lists explain the next useful action.
 ### Forms and overlays
-Typed terminal fields with labels, Tab/Shift+Tab movement, Ctrl+U clear, Backspace edit, Enter commit and Esc cancel. Search is local and explicit Enter applies; C clears. Notion tokens are never input/display fields.
+Typed terminal fields with labels, Tab/Shift+Tab movement, Ctrl+U clear, Backspace edit, Enter commit and Esc cancel. Search is local and explicit Enter applies; C clears. GitHub intake uses the same modal focus/editing behavior with repository and optional label fields; narrow forms keep both fields and Scan/Cancel visible. Notion tokens are never input/display fields.
 ### Iconography
 Text arrows and simple separators only; every operation has a written label.
 ### Motion

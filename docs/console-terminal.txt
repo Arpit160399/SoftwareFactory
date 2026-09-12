@@ -1,7 +1,7 @@
  SOFTWARE FACTORY   terminal-test                                                                             
  Runner active                                                                                                
                                                                                                               
- Home │ Workflow │ Tasks │ Review │ History │ Settings                                                        
+ Home │ Workflow │ Tasks │ Review │ History │ Settings │ Issues                                               
                                                                                                               
 ┌ Review inbox · Enter details ──────────────────────────────────────────────────────────────────────────────┐
 │› Needs approval · Synthetic visible and saved result                                                       │

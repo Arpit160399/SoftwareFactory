@@ -20,6 +20,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Poll GitHub issues and coordinate evidence-gated repair tasks.
+    Issues {
+        #[command(subcommand)]
+        command: softwarefactory::issues_cli::IssuesCommand,
+    },
     /// Coordinate the entire product workflow across repeated cycles.
     Workflow {
         #[command(subcommand)]
@@ -176,6 +181,7 @@ fn execute() -> Result<()> {
         std::fs::canonicalize(&cli.project).context("Project directory does not exist")?
     };
     match cli.command.unwrap_or(Commands::Tui { setup: false }) {
+        Commands::Issues { command } => softwarefactory::issues_cli::execute(&root, command)?,
         Commands::Workflow { command } => softwarefactory::workflow_cli::execute(&root, command)?,
         Commands::Tui { setup: false } => tui::run(&root)?,
         Commands::Tui { setup: true } => {

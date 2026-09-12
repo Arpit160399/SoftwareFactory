@@ -1,1 +1,27 @@
-{"profile":"product-admin","sourceRoots":["src"],"locale":"en-GB","canonicalMap":"UX-CONTRACT.md","requiredCapabilities":["Form","Table Selection","Scrollbar","Toast","CRUD"],"requiredCommands":["unit","e2e"],"commands":{"unit":"cargo test --offline --all-targets","e2e":"python3 tests/console_smoke.py target/debug/softwarefactory"},"evidence":{"crudFullFlow":"tests/console.rs","failurePaths":"tests/console_smoke.py"}}
+{
+  "profile": "product-admin",
+  "sourceRoots": [
+    "src"
+  ],
+  "locale": "en-GB",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": [
+    "Form",
+    "Table Selection",
+    "Scrollbar",
+    "Toast",
+    "CRUD"
+  ],
+  "requiredCommands": [
+    "unit",
+    "e2e"
+  ],
+  "commands": {
+    "unit": "cargo test --offline --all-targets",
+    "e2e": "python3 tests/issues_tui_smoke.py target/debug/softwarefactory"
+  },
+  "evidence": {
+    "crudFullFlow": "tests/console.rs",
+    "failurePaths": "tests/issues_tui_smoke.py"
+  }
+}

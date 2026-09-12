@@ -11,9 +11,10 @@ Run `softwarefactory --project /absolute/path/to/project tui` (or omit `tui`). T
 | Tasks | Local Kanban view, current agent and cycle; Left/Right selects columns, Up/Down selects tasks |
 | Review | Exact proposals/results needing a human decision; Enter opens criteria, bounded code/guidance diffs, reviewer findings, check outcomes, evidence references and recorded decisions |
 | History | Saved workflows and cycle learning; selecting a workflow retains its identity |
+| Issues | GitHub intake, queued repairs, source changes, linked workflows and fix/regression evidence |
 | Settings | Current profile, budgets, reviewer count and board configuration; V lists installed versions, U checks published update metadata |
 
-Tab/Shift+Tab moves between screens; 1–6 selects one directly. Enter opens details, Esc returns, Up/Down scrolls details. `/` filters tasks, Enter applies and C clears. On narrow terminals fewer board columns appear at once; every column remains reachable. Below 42×12 the panel asks for more space while retaining safe close behavior. `NO_COLOR` disables control-panel colors; statuses retain text labels.
+Tab/Shift+Tab moves between screens; 1–7 selects one directly. Enter opens details, Esc returns, Up/Down scrolls details. `/` filters tasks, Enter applies and C clears. On narrow terminals fewer board columns appear at once; every column remains reachable. Below 42×12 the panel asks for more space while retaining safe close behavior. `NO_COLOR` disables control-panel colors; statuses retain text labels.
 
 **N** opens an objective and optional cycle-limit form, checks prerequisites, and starts the full workflow. **R** runs a saved workflow; **B** resumes a recoverable blocked/no-opportunity workflow. The start/run confirmation states that configured review packets and explicitly enabled Notion board updates may be written. Every feature and harness decision still requires the configured human decision source.
 
@@ -55,3 +56,14 @@ Missing approvals pause dependent work. A failed progress sync does not revoke a
 ## Validation and limits
 
 The local interface, queue and adapter are tested with synthetic projects, real terminal keystrokes and offline Notion API responses. Live Notion access/write permissions and real provider authentication are **not verified** until you configure them. No board, notification, remote message or production feature was created during implementation. A graphical workflow editor, background daemon and arbitrary per-role provider routing are outside this TUI increment.
+
+
+## GitHub issues
+
+Press **7** for Issues, then **G** to enter `OWNER/REPO` and an optional label. Tab switches fields, Ctrl+U clears, Enter scans and Esc cancels. Scanning uses the authenticated GitHub CLI and saves local tasks without dispatching agents. A failed scan keeps the prior queue visible; G retries with the retained input.
+
+Press **R** to run the saved issue queue after confirming configured review/board synchronization. The worker polls GitHub every 30 seconds between bounded stages, including when idle. **Space** pauses scanning and execution after the current stage. **Q** closes the TUI and stops scheduling further work. There is no background daemon.
+
+Up/Down selects an issue; **Enter** opens its original report status, workflow/run links, mandatory fix/regression criteria and check outcomes. **W** opens its Workflow view. **/** searches issues and **C** clears the search. The existing Tasks and Review screens retain full linked evidence and human-decision details.
+
+After resolving a blocker, **B** resumes the selected issue and its monitor. **X** pauses scheduling and requests cancellation of active work. After a finished/stopped attempt, **T** queues an eligible issue for a new attempt with fresh approval; scan again first if the report or eligibility changed. See [the issue loop guide](GITHUB-ISSUE-LOOP.md) for evidence and source-change semantics.

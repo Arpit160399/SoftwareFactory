@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add an Issues TUI tab with repository/label scan, continuous repair monitoring, pause/resume, cancellation, retries and fix/regression evidence details.
+
+- Add a GitHub issue queue and foreground repair loop with paginated intake, optional label selection, duplicate prevention, durable handoff recovery and explicit retries.
+- Require issue-fix and regression criteria with executable journey evidence before implementation; reuse independent review, repair iterations, human acceptance and retrospective gates.
+- Preserve original issue snapshots and report changed source, blocked work and unresolved outcomes without treating GitHub closure as repair evidence.
+
 ## 0.2.0 — 2026-09-08
 
 - List installed releases, the running binary version and the active launcher version with `versions`.

@@ -96,3 +96,29 @@ The review did not certify an arbitrary external bridge's sandbox or a real prod
 - No private run history is shared globally. No merge, release, publishing, schedule, workflow graph/editor or Android pilot was performed.
 
 These boundaries distinguish an implemented and tested local package from a completed live product pilot. The local package is ready to configure a real project; a live pilot requires the separate project inputs and feature approval described in the plan.
+
+
+## GitHub issue intake and repair loop — 12 September 2026
+
+Added CLI issue intake and a durable issue-to-workflow queue; see [the operating guide](GITHUB-ISSUE-LOOP.md). Validation used the locked dependencies and the existing isolated Rust toolchain on macOS arm64.
+
+- All 81 pre-existing Rust tests passed, covering engine rules, whole workflows, console/board, setup, adapters and version management.
+- All 10 new issue tests passed: four intake/contract unit tests and six integration tests. The real CLI was tested with a deterministic `gh` replacement enforcing the exact read-only API argument contract.
+- The repair test deliberately passed the targeted issue check while failing an existing-behavior check. The coordinator returned to planning, performed a second implementation, reran both checks and waited for human acceptance. The unrelated saved content was preserved by the accepted candidate.
+- Integration coverage includes foreground runner waits, immutable issue input, changed-source reporting, interrupted handoff recovery, duplicate avoidance, fresh retry IDs, missing required contract rejection, no-action classification, closed queued issues and rejection of source changes after review.
+- All 19 offline Python Notion tests passed (9 review bridge and 10 Kanban tests).
+- Strict all-target Clippy, Rust formatting and whitespace checks passed.
+
+These are local deterministic tests, not a live GitHub/AI-runtime pilot. No live issue was modified, no PR was created, and no background monitor was installed. Live repair still requires authenticated GitHub access and the selected project's configured runtime, real fix/regression checks and human review bridge. That first increment covered the CLI; the following TUI increment adds its controls.
+
+
+## GitHub issue TUI controls — 12 September 2026
+
+Added a seventh Issues tab while retaining shortcuts 1–6. G opens repository/label input, R starts monitoring, Space pauses, Enter inspects fix/regression evidence, B resumes blocked work, X pauses scheduling and cancels the active attempt, and T retries a terminal issue. Network/adapter operations run in the existing worker. Idle issue monitoring remains visibly active even without a child workflow, and closing the TUI stops scheduling.
+
+- `cargo test --offline --all-targets`: **92 Rust tests passed**, including issue queue selection recovery and all seven screens at 120×36, 70×22, 44×14 and 30×8; populated issue rows are also checked down to 42×12.
+- `python3 tests/issues_tui_smoke.py target/debug/softwarefactory`: real PTY coverage includes the existing console smoke plus GitHub scan/validation, search/clear, failed scans retaining records, cancelled run confirmation, unapproved build pause, regression-triggered second implementation, stop/retry history, idle-monitor pause, narrow forms and confirmation controls, and terminal restoration.
+- Strict all-target Clippy and Rust formatting passed. The premium project audit and official DESIGN.md lint returned zero errors/warnings. Browser/DOM-specific checks do not apply to the native terminal interface.
+- Terminal captures: `docs/issues-terminal.txt` shows the exact fixture candidate's passed fix/regression checks after two attempts; `docs/console-terminal.txt` records the sibling review screen.
+
+Design reconciliation: the canonical palette, terminal font, panel/list primitives and worker ownership remain unchanged. Navigation intentionally extends from six to seven screens. Narrow layouts show the selected tab, compact issue rows and input/action controls; confirmation footers remain visible while their content scrolls. `DESIGN.md` and `UX-CONTRACT.md` record those choices. Fixtures cover local behavior; live GitHub/provider authentication and real-project checks still require project setup.

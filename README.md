@@ -13,7 +13,7 @@ cargo build --release --locked
 ./target/release/softwarefactory --project /absolute/path/to/project tui
 ```
 
-The default TUI now opens a six-screen control panel with live workflow controls, a local task board, review evidence, prerequisites and Notion sync health. See [the TUI guide](docs/TUI.md). Press E for setup, or use `tui --setup`.
+The default TUI now opens a seven-screen control panel with live workflow controls, a local task board, review evidence, prerequisites and Notion sync health. See [the TUI guide](docs/TUI.md). Press E for setup, or use `tui --setup`.
 
 The wizard accepts the exact project directory, generic or Meal Map template, product context, runtime executable, high-reasoning planner model, review bridge, human reviewer IDs and a checks JSON file. Tab changes fields, Ctrl+U clears a field, Enter previews, Y applies, and Esc returns or cancels. Small terminals scroll the selected field; preview and result screens support arrow-key scrolling.
 
@@ -110,6 +110,14 @@ Notion Kanban progress tracking and its required setup are defined in [Notion Ka
 ## Repeat the whole workflow
 
 Use `workflow start "PRODUCT QUESTION"`, then `workflow run WORKFLOW_ID` to repeat discovery, proposal, approved development, human acceptance and retrospective across cycles. Each cycle requires fresh decisions. The loop saves progress, carries prior learning forward, and pauses at approvals, budgets or no actionable opportunity. Add `--review` to explicitly synchronize and poll the configured review source. See [the whole-workflow guide](docs/WHOLE-WORKFLOW.md) for stopping, resuming, cycle limits and command-runtime requirements.
+
+## Repair GitHub issues in a loop
+
+In the TUI, press **7** for Issues, **G** to scan, and **R** to run the queue. **Space** pauses, **Enter** shows fix/regression evidence, **X** stops an attempt, and **T** retries it.
+
+From the CLI, use `issues scan --repo OWNER/REPO --label bug` to create local issue tasks, then `issues run --repo OWNER/REPO --label bug` to poll and coordinate their repair. Each task passes through product planning, technical planning, implementation, mandatory fix and regression checks, independent review and human acceptance. Failed verification returns to planning. Repeat scans do not duplicate tasks, and interrupted handoffs resume from saved state.
+
+Add `--until-wait` to return at the next human gate, or `--review` to explicitly synchronize and poll the configured review source. Setup requires authenticated GitHub CLI plus the project's runtime, reviewers and executable checks. See [the GitHub issue loop guide](docs/GITHUB-ISSUE-LOOP.md) for configuration, evidence requirements, status, recovery and retries.
 
 ## Run an approved feature
 
