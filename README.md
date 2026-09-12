@@ -2,7 +2,7 @@
 
 A Rust terminal application for setting up and running project-scoped product-development workflows. The setup wizard and command line share the same configuration, transaction and workflow services.
 
-The package implements the initial tool described in `multi-agent-product-workflow-plan.md`: setup, explicit approvals, separate planner/implementer/reviewer contexts, verification, recovery, feedback and harness-comparison records. The real Meal Map pilot is **not yet run**. Its runtime command, human reviewers, Notion destination, approved feature and iOS checks still need configuration and live validation. No external records or application repositories were changed while building this package.
+The package implements the initial tool described in `multi-agent-product-workflow-plan.md`: setup, explicit approvals, separate planner/implementer/reviewer contexts, verification, recovery, feedback and harness-comparison records. Its runtime command, human reviewers, Notion destination, approved feature and checks still need configuration and live validation. No external records or application repositories were changed while building this package.
 
 ## Build and launch
 
